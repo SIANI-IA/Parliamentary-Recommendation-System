@@ -3,9 +3,10 @@ from sklearn.metrics.pairwise import cosine_similarity
 from scipy.sparse import vstack
 
 class PULKMeans:
-    def __init__(self, max_iter=20, tol=1e-4):
+    def __init__(self, max_iter: int = 20, tol: float = 1e-4, verbose: bool = False):
         self.max_iter = max_iter
         self.tol = tol
+        self.verbose = verbose
         self.reliable_negatives_indices = []
 
     def fit(self, P_matrix, U_matrix):
@@ -27,7 +28,8 @@ class PULKMeans:
         # Al principio todos los Unlabeled contribuyen al centroide negativo
         u_labels = np.zeros(n_unlabeled) 
         
-        print(f"  [PUL-KM] Inicio: {n_pos} Positivos vs {n_unlabeled} Unlabeled")
+        if self.verbose:
+            print(f"  [PUL-KM] Inicio: {n_pos} Positivos vs {n_unlabeled} Unlabeled")
 
         for iteration in range(self.max_iter):
             prev_u_labels = u_labels.copy()
@@ -67,14 +69,16 @@ class PULKMeans:
             else:
                 # Caso extremo (raro): Todos los U se fueron a P. 
                 # No actualizamos c_neg o detenemos.
-                print("  [Warning] Cluster negativo vacío.")
+                if self.verbose:
+                    print("  [Warning] Cluster negativo vacío.")
                 break
 
             # --- 4. CONVERGENCIA ---
             # Si las etiquetas de U no cambian, hemos convergido [cite: 90]
             changes = np.sum(u_labels != prev_u_labels)
             if changes == 0:
-                print(f"  [PUL-KM] Convergencia alcanzada en iteración {iteration+1}")
+                if self.verbose:
+                    print(f"  [PUL-KM] Convergencia alcanzada en iteración {iteration+1}")
                 break
         
         # --- 5. RESULTADO FINAL ---
@@ -83,6 +87,7 @@ class PULKMeans:
         self.reliable_negatives_indices = np.where(u_labels == 0)[0]
         
         num_rn = len(self.reliable_negatives_indices)
-        print(f"  [PUL-KM] Fin. Detectados {num_rn} Negativos Fiables (de {n_unlabeled} Unlabeled)")
+        if self.verbose:
+            print(f"  [PUL-KM] Fin. Detectados {num_rn} Negativos Fiables (de {n_unlabeled} Unlabeled)")
         
         return self.reliable_negatives_indices
