@@ -6,11 +6,11 @@ import csv
 from datasets import load_from_disk, Dataset
 from transformers import AutoTokenizer
 from tqdm import tqdm
-from typing import Dict, List, Any
+from typing import Dict, Any
 
 # --- CONFIGURACIÓN ---
 FOLDER_DS = "/home/miguel/data/raw/CAN_dataset"
-OUTPUT_DIR = "dataset/parcanDeb-multilabel"
+OUTPUT_DIR = "dataset/parcanDeb-rec"
 MODEL_ID = "unsloth/Meta-Llama-3.1-8B-Instruct"
 MAX_CHAR_NAME = 40       # Límite caracteres nombre diputado
 MIN_CHAR_CONTENT = 300   # Filtro: Mínimo de caracteres para guardar la intervención
