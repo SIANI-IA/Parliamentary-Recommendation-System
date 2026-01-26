@@ -5,7 +5,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 from models.ML.ParliamentaryVectorization import ParliamentaryVectorization
 from models.ML.PULKMeans import PULKMeans
-from eval.Evaluator import GlobalEvaluator
+from eval.Evaluator import Evaluator
 from utils import SEED
 
 class IRClassifier:
@@ -72,7 +72,7 @@ class IRClassifier:
         
         # 5. Evaluación
         print("\n5. Calculando métricas...")
-        evaluator = GlobalEvaluator(self.mp_list)
+        evaluator = Evaluator(self.mp_list)
         metrics = evaluator.compute_all_metrics(y_test_true_indices, global_scores)
         evaluator.print_report(metrics)
         

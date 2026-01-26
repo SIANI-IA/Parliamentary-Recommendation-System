@@ -6,7 +6,7 @@ from scipy.sparse import vstack
 
 from models.ML.ParliamentaryVectorization import ParliamentaryVectorization
 from models.ML.PULKMeans import PULKMeans
-from eval.Evaluator import GlobalEvaluator
+from eval.Evaluator import Evaluator
 from utils import SEED
 
 class ParliamentaryClassifierGlobal:
@@ -87,7 +87,7 @@ class ParliamentaryClassifierGlobal:
             global_scores[:, i] = scores
 
         print("\n\n3. Calculando métricas finales...")
-        evaluator = GlobalEvaluator(mp_list)
+        evaluator = Evaluator(mp_list)
         metrics = evaluator.compute_all_metrics(y_test_true_indices, global_scores)
         evaluator.print_report(metrics)
         

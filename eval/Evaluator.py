@@ -1,42 +1,41 @@
 import numpy as np
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, average_precision_score, ndcg_score
 
-class GlobalEvaluator:
-    def __init__(self, mp_names, k_values=[1, 5, 10]):
-        self.mp_names = mp_names
+class Evaluator:
+    def __init__(self, k_values=[1, 5, 10, 20]):
         self.k_values = k_values
 
-    def compute_all_metrics(self, y_true_indices, y_scores_matrix):
+    def compute_all_metrics(self, y_true_matrix, y_scores_matrix, threshold=0.5):
         """
-        Calcula métricas de clasificación (Micro/Macro) y de ranking (IR).
+        Calcula métricas para Multi-Label Classification y Ranking IR.
+        
+        Args:
+            y_true_matrix: Matriz binaria (N_muestras x N_clases) con el Ground Truth.
+            y_scores_matrix: Matriz de floats (N_muestras x N_clases) con probabilidades/scores.
+            threshold: Umbral para convertir scores en predicciones binarias (Clasificación).
         """
-        print(f"\n--- Evaluando {len(y_true_indices)} documentos de Test ---")
+        print(f"\n--- Evaluando {y_true_matrix.shape[0]} documentos de Test (Multi-Label) ---")
         metrics = {}
         
-        # --- A. CLASIFICACIÓN (Top-1 Prediction) ---
-        # Tomamos el diputado con mayor score como la predicción
-        y_pred_indices = np.argmax(y_scores_matrix, axis=1)
+        # --- A. CLASIFICACIÓN (Threshold-based) ---
+        # Convertimos scores continuos a predicciones binarias (0 o 1)
+        y_pred_binary = (y_scores_matrix >= threshold).astype(int)
         
-        # 1. Accuracy
-        metrics["Accuracy"] = accuracy_score(y_true_indices, y_pred_indices)
+        # 1. Exact Match Ratio (Subset Accuracy)
+        # Es muy estricta: exige acertar TODOS los oradores y NO fallar ninguno
+        metrics["Accuracy (Subset)"] = accuracy_score(y_true_matrix, y_pred_binary)
         
-        # 2. Métricas Micro, Macro y Weighted
-        # MICRO: Calcula globales contando total de aciertos/fallos (Importante para comparar con Paper)
+        # 2. Métricas Micro/Macro/Weighted (Standard en Papers ML)
+        # MICRO: Agrega TP, FP, FN globalmente (importante para clases desbalanceadas)
         p_micro, r_micro, f1_micro, _ = precision_recall_fscore_support(
-            y_true_indices, y_pred_indices, average='micro', zero_division=0
+            y_true_matrix, y_pred_binary, average='micro', zero_division=0
         )
         
-        # MACRO: Calcula métricas por diputado y luego promedia (sin importar si habló mucho o poco)
+        # MACRO: Promedio aritmético de métricas por clase
         p_macro, r_macro, f1_macro, _ = precision_recall_fscore_support(
-            y_true_indices, y_pred_indices, average='macro', zero_division=0
+            y_true_matrix, y_pred_binary, average='macro', zero_division=0
         )
         
-        # WEIGHTED: Promedia pesando por número de intervenciones (útil para ver impacto real)
-        p_weighted, r_weighted, f1_weighted, _ = precision_recall_fscore_support(
-            y_true_indices, y_pred_indices, average='weighted', zero_division=0
-        )
-        
-        # Guardamos todo
         metrics["Precision (Micro)"] = p_micro
         metrics["Recall (Micro)"]    = r_micro
         metrics["F1-Score (Micro)"]  = f1_micro
@@ -44,61 +43,67 @@ class GlobalEvaluator:
         metrics["Precision (Macro)"] = p_macro
         metrics["Recall (Macro)"]    = r_macro
         metrics["F1-Score (Macro)"]  = f1_macro
-        
-        metrics["Precision (Weighted)"] = p_weighted
-        metrics["Recall (Weighted)"]    = r_weighted
-        metrics["F1-Score (Weighted)"]  = f1_weighted
 
-        # --- B. RANKING / IR (Igual que antes) ---
-        mrr_sum = 0
-        recalls_at_k = {k: 0 for k in self.k_values}
-        ndcg_sum = 0
-        n_samples = len(y_true_indices)
+        # --- B. RANKING / IR (List-wise) ---
+        
+        # 1. MAP (Mean Average Precision)
+        # average='samples' calcula la AP para cada fila y hace la media -> Esto es MAP
+        metrics["MAP"] = average_precision_score(y_true_matrix, y_scores_matrix, average='samples')
+        
+        # 2. nDCG (Normalized Discounted Cumulative Gain)
+        # Sklearn lo calcula eficientemente para matrices
+        metrics["nDCG"] = ndcg_score(y_true_matrix, y_scores_matrix)
+
+        # 3. Recall@K (Multi-label)
+        # Definición: De todos los oradores reales, ¿qué fracción aparece en el Top-K predicho?
+        n_samples = y_true_matrix.shape[0]
+        recalls_at_k = {k: 0.0 for k in self.k_values}
         
         for i in range(n_samples):
-            true_idx = y_true_indices[i]
+            true_indices = np.where(y_true_matrix[i] == 1)[0]
+            if len(true_indices) == 0:
+                continue # Evitar división por cero si no hay oradores (no debería pasar tras limpieza)
+                
+            # Obtener los índices de los K scores más altos
+            # argsort ordena ascendente, tomamos el final y damos la vuelta
             scores = y_scores_matrix[i]
-            
-            # Ordenar descendente
             sorted_indices = np.argsort(scores)[::-1]
             
-            # Buscar rango
-            rank_tuple = np.where(sorted_indices == true_idx)[0]
-            
-            if len(rank_tuple) > 0:
-                rank = rank_tuple[0] + 1
-                mrr_sum += 1.0 / rank
-                ndcg_sum += 1.0 / np.log2(rank + 1)
-            else:
-                rank = float('inf')
-
             for k in self.k_values:
-                if rank <= k:
-                    recalls_at_k[k] += 1
+                top_k_indices = sorted_indices[:k]
+                
+                # Intersección: cuántos de mis Top-K son reales
+                hits = len(set(top_k_indices) & set(true_indices))
+                
+                # Recall@K = Hits / Total_Relevantes
+                # Nota: Si k < Total_Relevantes, el recall maximo es k/Total
+                recalls_at_k[k] += hits / len(true_indices)
 
-        metrics["MRR"] = mrr_sum / n_samples
-        metrics["nDCG"] = ndcg_sum / n_samples
         for k in self.k_values:
             metrics[f"Recall@{k}"] = recalls_at_k[k] / n_samples
 
         return metrics
 
     def print_report(self, metrics):
-        print("\n=== REPORTE DE EVALUACIÓN FINAL (COMPARABLE CON PAPER) ===")
-        print(">> MÉTRICAS GLOBALES (MICRO)")
-        print(f"   Accuracy:            {metrics['Accuracy']:.4f}")
-        print(f"   Micro Precision:     {metrics['Precision (Micro)']:.4f}")
-        print(f"   Micro Recall:        {metrics['Recall (Micro)']:.4f}")
-        print(f"   Micro F1-Score:      {metrics['F1-Score (Micro)']:.4f}  <-- DATO CLAVE PAPER")
-        
-        print("\n>> MÉTRICAS PROMEDIO (MACRO)")
-        print(f"   Macro Precision:     {metrics['Precision (Macro)']:.4f}")
-        print(f"   Macro Recall:        {metrics['Recall (Macro)']:.4f}")
-        print(f"   Macro F1-Score:      {metrics['F1-Score (Macro)']:.4f}  <-- DATO CLAVE PAPER")
+        print("\n=== REPORTE DE EVALUACIÓN MULTI-LABEL ===")
+        print(">> CLASIFICACIÓN (Threshold-based)")
+        print(f"   Accuracy (Subset):   {metrics['Accuracy (Subset)']:.4f}")
+        print(f"   Micro F1-Score:      {metrics['F1-Score (Micro)']:.4f}  <-- CLAVE PARA PAPER")
+        print(f"   Macro F1-Score:      {metrics['F1-Score (Macro)']:.4f}")
         
         print("\n>> RANKING / IR")
-        print(f"   MRR:                 {metrics['MRR']:.4f}")
+        print(f"   MAP:                 {metrics['MAP']:.4f}  <-- NUEVA MÉTRICA PRINCIPAL")
         print(f"   nDCG:                {metrics['nDCG']:.4f}")
         for k in self.k_values:
             print(f"   Recall@{k:<2}:           {metrics[f'Recall@{k}']:.4f}")
-        print("==========================================================")
+        print("=========================================")
+
+# --- Ejemplo de uso ---
+if __name__ == "__main__":
+    # Simulación de datos
+    y_true = np.array([[1, 1, 1], [0, 1, 0]]) # 2 documentos, 3 oradores
+    y_scores = np.array([[0.9, 0.1, 0.8], [0.2, 0.6, 0.3]]) 
+    
+    ev = Evaluator()
+    m = ev.compute_all_metrics(y_true, y_scores, threshold=0.5)
+    ev.print_report(m)
