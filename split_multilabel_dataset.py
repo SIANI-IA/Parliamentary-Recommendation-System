@@ -5,11 +5,17 @@ import pandas as pd
 from datasets import load_from_disk, Dataset, DatasetDict
 from skmultilearn.model_selection import IterativeStratification
 
-from utils import SEED
+from utils import SEED  
+
+import random
+
+# Fijar semilla globalmente
+random.seed(SEED)
+np.random.seed(SEED)
 
 # --- CONFIGURACIÓN ---
-INPUT_DIR = "dataset/parcanDeb-multilabel"
-OUTPUT_DIR = "dataset/parcanDeb-iterative"
+INPUT_DIR = "dataset/parcanDeb-rec"
+OUTPUT_DIR = "dataset/parcanDeb-rec-split"
 TINY_SIZE = 50
 
 def main():
