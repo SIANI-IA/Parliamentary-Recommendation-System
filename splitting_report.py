@@ -1,133 +1,158 @@
-import json
 import os
-import random
-import math
-import csv
-from typing import Dict, List, Tuple
+import json
+import numpy as np
+import pandas as pd
+from datasets import load_from_disk, Dataset, DatasetDict
+from skmultilearn.model_selection import IterativeStratification
+
+from utils import SEED
 
 # --- CONFIGURACIÓN ---
-BASE_DIR = "dataset/parcanDeb-mp"
-SUBSETS = ['all', '10', '25', '75', '150']
-SEED = 123
-
-def split_interventions(interventions: List[str]) -> Tuple[List[str], List[str], List[str]]:
-    """
-    Divide una lista de intervenciones en Train, Val y Test siguiendo la lógica:
-    - N < 3: Todo a Train (datos insuficientes para dividir).
-    - 3 <= N < 10: 1 a Test, 1 a Val, resto a Train.
-    - N >= 10: 10% Test, 10% Val, 80% Train (redondeo estándar).
-    """
-    n = len(interventions)
-    
-    # Aseguramos aleatoriedad determinista
-    # Hacemos una copia para no modificar la lista original fuera de la función
-    shuffled_data = interventions.copy()
-    random.shuffle(shuffled_data)
-
-    if n < 3:
-        # Caso extremo: No hay suficiente para repartir
-        return shuffled_data, [], []
-    
-    elif n < 10:
-        # Caso pocos datos: Asegurar al menos 1 en validación y test
-        test_data = shuffled_data[:1]
-        val_data = shuffled_data[1:2]
-        train_data = shuffled_data[2:]
-        return train_data, val_data, test_data
-    
-    else:
-        # Caso estándar: 80 / 10 / 10
-        n_test = math.ceil(n * 0.10)
-        n_val = math.ceil(n * 0.10)
-        
-        # Índices de corte
-        test_end = n_test
-        val_end = n_test + n_val
-        
-        test_data = shuffled_data[:test_end]
-        val_data = shuffled_data[test_end:val_end]
-        train_data = shuffled_data[val_end:]
-        
-        return train_data, val_data, test_data
-
-def process_subset(subset_name: str):
-    folder_path = os.path.join(BASE_DIR, subset_name)
-    input_file = os.path.join(folder_path, "mp_interventions.json")
-
-    if not os.path.exists(input_file):
-        print(f"  [SKIPPING] No se encontró {input_file}")
-        return None
-
-    print(f"--- Procesando subset: {subset_name} ---")
-    
-    with open(input_file, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-
-    # Estructuras para los nuevos datasets
-    train_set = {}
-    val_set = {}
-    test_set = {}
-
-    stats = {
-        "train": 0,
-        "val": 0,
-        "test": 0
-    }
-
-    # Iterar por cada diputado para mantener la estratificación
-    for mp, interventions in data.items():
-        train_i, val_i, test_i = split_interventions(interventions)
-
-        if train_i: train_set[mp] = train_i
-        if val_i: val_set[mp] = val_i
-        if test_i: test_set[mp] = test_i
-
-        stats["train"] += len(train_i)
-        stats["val"] += len(val_i)
-        stats["test"] += len(test_i)
-
-    # Guardar los archivos
-    splits = [("train.json", train_set), ("val.json", val_set), ("test.json", test_set)]
-    
-    for filename, content in splits:
-        out_path = os.path.join(folder_path, filename)
-        with open(out_path, 'w', encoding='utf-8') as f:
-            json.dump(content, f, ensure_ascii=False, indent=4)
-
-    print(f"  [OK] Guardados splits en {folder_path}")
-    print(f"  Distribución -> Train: {stats['train']} | Val: {stats['val']} | Test: {stats['test']}")
-    
-    return stats
+INPUT_DIR = "dataset/parcanDeb-multilabel"
+OUTPUT_DIR = "dataset/parcanDeb-iterative"
+TINY_SIZE = 50
 
 def main():
-    random.seed(SEED) # Semilla global para reproducibilidad
-    
-    report_data = []
+    print(f"Cargando dataset desde {INPUT_DIR}...")
+    ds = load_from_disk(INPUT_DIR)
 
-    for subset in SUBSETS:
-        subset_stats = process_subset(subset)
-        if subset_stats:
-            total = sum(subset_stats.values())
-            report_data.append({
-                "Subset": subset,
-                "Total Interventions": total,
-                "Train Count": subset_stats["train"],
-                "Val Count": subset_stats["val"],
-                "Test Count": subset_stats["test"],
-                "Train %": f"{subset_stats['train']/total:.1%}",
-                "Val %": f"{subset_stats['val']/total:.1%}",
-                "Test %": f"{subset_stats['test']/total:.1%}"
-            })
+    # Cargar Metadata
+    with open(os.path.join(INPUT_DIR, "mp_mapping.json"), 'r') as f:
+        mapping_data = json.load(f)
+        num_classes = len(mapping_data['label2id'])
 
-    # Guardar reporte CSV general
-    csv_path = os.path.join(BASE_DIR, "splitting_report.csv")
-    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-        fieldnames = ["Subset", "Total Interventions", "Train Count", "Val Count", "Test Count", "Train %", "Val %", "Test %"]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(report_data)
+    # Convertir a Pandas y extraer matriz de etiquetas (y)
+    df = ds.to_pandas()
+    # Convertir la lista de listas 'label' a una matriz NumPy (N_samples x N_classes)
+    y_all = np.array(df['label'].tolist())
     
-    print(f"\n[FIN] Reporte general guardado en: {csv_path}")
+    # Índices originales para poder recuperar las filas luego
+    indices_all = np.arange(len(df)).reshape(-1, 1)
+
+    print(f"Dataset total: {y_all.shape[0]} filas, {y_all.shape[1]} etiquetas (MPs).")
+
+    # ---------------------------------------------------------
+    # PASO 1: PROTECCIÓN DE SINGLETONS Y CASOS MUY RAROS
+    # ---------------------------------------------------------
+    # Contamos cuántas veces aparece cada etiqueta (columna)
+    label_counts = y_all.sum(axis=0)
+    
+    # Identificar etiquetas que aparecen solo 1 vez (Singletons)
+    singleton_indices = np.where(label_counts == 1)[0]
+    
+    # Identificar las filas que contienen esos singletons
+    # Si una fila tiene un 1 en alguna columna 'singleton', esa fila ES singleton.
+    rows_with_singletons = np.any(y_all[:, singleton_indices] == 1, axis=1)
+    
+    # Separamos los datos en dos grupos:
+    # A) Force Train: Filas con oradores únicos
+    # B) Stratifiable: El resto
+    idx_force_train = indices_all[rows_with_singletons]
+    idx_stratifiable = indices_all[~rows_with_singletons]
+    
+    y_stratifiable = y_all[~rows_with_singletons]
+    
+    print(f" -> Filas forzadas a Train (Singletons): {len(idx_force_train)}")
+    print(f" -> Filas para estratificación iterativa: {len(idx_stratifiable)}")
+
+    # ---------------------------------------------------------
+    # PASO 2: ESTRATIFICACIÓN ITERATIVA (80% Train, 20% Temp)
+    # ---------------------------------------------------------
+    # IterativeStratification necesita dividir X e y. Usamos los índices como X.
+    k_fold = IterativeStratification(n_splits=2, order=1, sample_distribution_per_fold=[0.2, 0.8])
+    
+    # Este iterador devuelve índices de train y test. Solo necesitamos la primera vuelta.
+    # Nota: skmultilearn devuelve train_index, test_index. 
+    # Aquí 'test_index' será nuestro 20% (Temp) y 'train_index' el 80% (Train 1)
+    train_idx_iter, temp_idx_iter = next(k_fold.split(idx_stratifiable, y_stratifiable))
+
+    # Mapeamos los índices relativos de vuelta a los índices originales del dataframe
+    real_train_idx = idx_stratifiable[train_idx_iter].flatten()
+    real_temp_idx = idx_stratifiable[temp_idx_iter].flatten()
+
+    # ---------------------------------------------------------
+    # PASO 3: DIVIDIR TEMP EN DEV (50%) Y TEST (50%)
+    # ---------------------------------------------------------
+    # Obtenemos las etiquetas del subconjunto temporal para volver a estratificar
+    y_temp = y_all[real_temp_idx]
+    
+    # Usamos Iterative de nuevo para dividir el 20% restante en 10% Dev y 10% Test
+    k_fold_2 = IterativeStratification(n_splits=2, order=1)
+    dev_rel, test_rel = next(k_fold_2.split(real_temp_idx, y_temp))
+    
+    real_dev_idx = real_temp_idx[dev_rel].flatten()
+    real_test_idx = real_temp_idx[test_rel].flatten()
+
+    # ---------------------------------------------------------
+    # PASO 4: RECONSTRUCCIÓN Y SEGURIDAD FINAL
+    # ---------------------------------------------------------
+    # Train Final = (Forzados) + (Estratificados)
+    final_train_indices = np.concatenate([idx_force_train.flatten(), real_train_idx])
+    
+    # Crear Dataframes
+    df_train = df.iloc[final_train_indices]
+    df_dev = df.iloc[real_dev_idx]
+    df_test = df.iloc[real_test_idx]
+
+    # Convertir a Dataset HF
+    train_ds = Dataset.from_pandas(df_train, preserve_index=False)
+    dev_ds = Dataset.from_pandas(df_dev, preserve_index=False)
+    test_ds = Dataset.from_pandas(df_test, preserve_index=False)
+
+    print(f"\n[Splits Generados]")
+    print(f" Train: {len(train_ds)}")
+    print(f" Dev:   {len(dev_ds)}")
+    print(f" Test:  {len(test_ds)}")
+
+    # ---------------------------------------------------------
+    # PASO 5: VALIDACIÓN DE "CLOSED WORLD"
+    # ---------------------------------------------------------
+    print("\nValidando consistencia de oradores...")
+    
+    # Obtener oradores que existen en train
+    train_speakers_set = set()
+    for s_list in train_ds['Speakers']:
+        train_speakers_set.update(s_list)
+    
+    def sanitize(example):
+        """Elimina oradores en dev/test que no estén en train"""
+        current = example['Speakers']
+        valid = [s for s in current if s in train_speakers_set]
+        
+        # Si la lista cambia, necesitamos actualizar el vector label
+        if len(valid) != len(current):
+            new_label = np.zeros(num_classes, dtype=int)
+            for s in valid:
+                new_label[mapping_data['label2id'][s]] = 1
+            return {"Speakers": valid, "label": new_label.tolist(), "keep": len(valid) > 0}
+        
+        return {"Speakers": current, "label": example['label'], "keep": True}
+
+    # Aplicar sanitización (por si IterativeStratification dejó algún caso borde raro)
+    dev_ds = dev_ds.map(sanitize).filter(lambda x: x['keep']).remove_columns(['keep'])
+    test_ds = test_ds.map(sanitize).filter(lambda x: x['keep']).remove_columns(['keep'])
+
+    print(f" Train Final: {len(train_ds)} (Oradores únicos: {len(train_speakers_set)})")
+    print(f" Dev Final:   {len(dev_ds)}")
+    print(f" Test Final:  {len(test_ds)}")
+
+    # 6. Guardar y Tiny
+    tiny_ds = train_ds.shuffle(seed=SEED).select(range(min(TINY_SIZE, len(train_ds))))
+    
+    final_splits = DatasetDict({
+        'train': train_ds,
+        'dev': dev_ds,
+        'test': test_ds,
+        'tiny': tiny_ds
+    })
+
+    final_splits.save_to_disk(OUTPUT_DIR)
+    
+    # Copiar JSON
+    with open(os.path.join(OUTPUT_DIR, "mp_mapping.json"), 'w', encoding='utf-8') as f:
+        json.dump(mapping_data, f, indent=4, ensure_ascii=False)
+
+    print(f"\n[OK] Guardado en {OUTPUT_DIR}")
 
 if __name__ == "__main__":
     main()

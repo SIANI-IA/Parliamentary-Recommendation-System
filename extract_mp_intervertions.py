@@ -1,36 +1,26 @@
 import re
 import json
 import os
-import csv
 import numpy as np
-from datasets import load_from_disk
+import csv
+from datasets import load_from_disk, Dataset
 from transformers import AutoTokenizer
 from tqdm import tqdm
 from typing import Dict, List, Any
 
 # --- CONFIGURACIÓN ---
 FOLDER_DS = "/home/miguel/data/raw/CAN_dataset"
-OUTPUT_BASE_DIR = "dataset/parcanDeb-mp"
-MAX_CHAR_NAME = 40       # Límite caracteres nombre diputado
-MIN_CHAR_CONTENT = 300    # <--- NUEVO FILTRO: Mínimo de caracteres para guardar la intervención
+OUTPUT_DIR = "dataset/parcanDeb-multilabel"
 MODEL_ID = "unsloth/Meta-Llama-3.1-8B-Instruct"
-
-# Umbrales de filtrado (cantidad mínima de intervenciones por diputado)
-THRESHOLDS = {
-    'all': 0,
-    '10': 10,
-    '25': 25,
-    '75': 75,
-    '150': 150
-}
+MAX_CHAR_NAME = 40       # Límite caracteres nombre diputado
+MIN_CHAR_CONTENT = 300   # Filtro: Mínimo de caracteres para guardar la intervención
 
 def extract_interventions(texto: str) -> Dict[str, list]:
     """
-    Extrae las intervenciones de un texto plano usando Regex y filtra las muy cortas.
+    Extrae las intervenciones de un texto plano usando Regex.
+    Devuelve: { 'NombreMP': ['texto1', 'texto2'] }
     """
     intervenciones = {}
-    
-    # Patrón: (El señor|La señora) + (Nombre) + :
     patron = r'(El señor|La señora)\s+([^:]+):'
     matches = list(re.finditer(patron, texto))
 
@@ -41,15 +31,13 @@ def extract_interventions(texto: str) -> Dict[str, list]:
         nombre_limpio = nombre_crudo.replace("(desde su escaño)", "").strip()
         nombre_temp = nombre_limpio.replace("(Desde su escaño)", "").strip()
 
-        # Priorizar nombre dentro de paréntesis si existe: Ej: (Clavijo Batlle)
         match_nombre_real = re.search(r'\((.*?)\)', nombre_temp)
-        
         if match_nombre_real:
             nombre_limpio = match_nombre_real.group(1).strip()
         else:
             nombre_limpio = nombre_temp
 
-        nombre_limpio = nombre_limpio.title() # Capitalizar
+        nombre_limpio = nombre_limpio.title()
 
         # --- Extracción del texto ---
         inicio_texto = match.end()
@@ -60,134 +48,157 @@ def extract_interventions(texto: str) -> Dict[str, list]:
 
         contenido = texto[inicio_texto:fin_texto].strip()
 
-        # --- FILTRADO Y GUARDADO ---
-        # Solo guardamos si supera el mínimo de caracteres (quita "Sí.", "Gracias.", etc.)
+        # --- FILTRADO POR LONGITUD ---
         if len(contenido) >= MIN_CHAR_CONTENT:
             if nombre_limpio not in intervenciones:
                 intervenciones[nombre_limpio] = []
-            
             intervenciones[nombre_limpio].append(contenido)
 
     return intervenciones
 
-def calculate_statistics(mp_data: Dict[str, List[str]], tokenizer) -> Dict[str, Any]:
-    """
-    Calcula estadísticas detalladas del subconjunto de datos.
-    """
-    print("  -> Calculando estadísticas y tokenizando...")
+def save_statistics(output_path: str, stats: Dict[str, Any]):
+    """Guarda las estadísticas en JSON y CSV para fácil lectura"""
+    # Guardar JSON
+    with open(os.path.join(output_path, "stats_summary.json"), 'w', encoding='utf-8') as f:
+        json.dump(stats, f, indent=4, ensure_ascii=False)
     
-    total_mps = len(mp_data)
-    if total_mps == 0:
-        return {}
-
-    counts_interventions = [len(msgs) for msgs in mp_data.values()]
-    total_interventions = sum(counts_interventions)
-    
-    # Tokenización para estadísticas de longitud
-    all_token_lengths = []
-    # Usamos tqdm para ver progreso si son muchos datos
-    for msgs in tqdm(mp_data.values(), desc="    Tokenizando intervenciones"):
-        for msg in msgs:
-            tokens = tokenizer.tokenize(msg)
-            all_token_lengths.append(len(tokens))
-    
-    stats = {
-        "Total MPs": total_mps,
-        "Total Interventions": total_interventions,
-        "Min Interventions per MP": min(counts_interventions) if counts_interventions else 0,
-        "Max Interventions per MP": max(counts_interventions) if counts_interventions else 0,
-        "Avg Interventions per MP": round(np.mean(counts_interventions), 2) if counts_interventions else 0,
-        "Median Interventions per MP": round(np.median(counts_interventions), 2) if counts_interventions else 0,
-        "Min Length (tokens)": min(all_token_lengths) if all_token_lengths else 0,
-        "Max Length (tokens)": max(all_token_lengths) if all_token_lengths else 0,
-        "Avg Length (tokens)": round(np.mean(all_token_lengths), 2) if all_token_lengths else 0,
-        "Total Tokens in Corpus": sum(all_token_lengths)
-    }
-    
-    return stats
-
-def save_subset(subset_name: str, data: Dict[str, List[str]], stats: Dict[str, Any]):
-    """
-    Guarda el JSON de intervenciones y el CSV de estadísticas.
-    """
-    folder_path = os.path.join(OUTPUT_BASE_DIR, subset_name)
-    os.makedirs(folder_path, exist_ok=True)
-    
-    # 1. Guardar JSON
-    json_path = os.path.join(folder_path, "mp_interventions.json")
-    with open(json_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-    
-    # 2. Guardar CSV de estadísticas
-    if stats:
-        csv_path = os.path.join(folder_path, "stats_summary.csv")
-        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow(["Metric", "Value"])
-            for key, value in stats.items():
-                writer.writerow([key, value])
-    
-    print(f"  [OK] Guardado subset '{subset_name}' en: {folder_path}")
+    # Guardar CSV simple
+    with open(os.path.join(output_path, "stats_summary.csv"), 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(["Metric", "Value"])
+        for k, v in stats.items():
+            writer.writerow([k, v])
 
 def main():
     # 1. Carga inicial
-    print("Cargando dataset y tokenizador...")
+    print(f"Cargando dataset desde {FOLDER_DS}...")
     try:
         ds = load_from_disk(FOLDER_DS)['all']
     except Exception as e:
         print(f"Error cargando dataset: {e}")
         return
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    print(f"Cargando tokenizador ({MODEL_ID}) para estadísticas...")
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    except:
+        print(" [!] No se pudo cargar el tokenizador. Usando conteo de palabras simple como fallback.")
+        tokenizer = None
+
+    processed_rows = []
     
-    # 2. Procesamiento Global
-    master_interventions = {}
+    # Estructuras para estadísticas
+    stats_mp_counts = {}      # { "Diputado A": 5, "Diputado B": 10 }
+    stats_token_lengths = []  # [120, 500, 45, ...] longitud de cada intervención
     
-    print(f"Procesando transcripciones (Filtrando < {MIN_CHAR_CONTENT} caracteres)...")
-    for item in tqdm(ds, desc="Extracting"):
-        transcripts = item['text']
-        partial_result = extract_interventions(transcripts)
+    print("Procesando filas, extrayendo oradores y calculando estadísticas...")
+    
+    # 2. Primera Pasada: Extracción, Descubrimiento y Stats
+    for item in tqdm(ds, desc="Processing"):
+        original_text = item['text']
+        original_pk = item.get('pk', item.get('PK', 'Unknown'))
         
-        for mp, msgs in partial_result.items():
-            # Filtros de nombre
-            if mp in ["Presidenta", "Presidente"]:
-                continue
-            if len(mp) > MAX_CHAR_NAME:
+        interventions_dict = extract_interventions(original_text)
+        
+        row_speakers = []
+        row_interventions = []
+
+        for mp, texts in interventions_dict.items():
+            # Filtros de limpieza de nombres
+            if mp in ["Presidenta", "Presidente"] or len(mp) > MAX_CHAR_NAME:
                 continue
             
-            if mp not in master_interventions:
-                master_interventions[mp] = []
-            master_interventions[mp].extend(msgs)
+            # --- Estadísticas ---
+            # 1. Conteo de intervenciones por MP
+            stats_mp_counts[mp] = stats_mp_counts.get(mp, 0) + len(texts)
+            
+            # 2. Longitud de tokens por intervención
+            for text in texts:
+                if tokenizer:
+                    # Tokenización real (más lento pero exacto para LLMs)
+                    length = len(tokenizer.tokenize(text))
+                else:
+                    # Fallback aproximado (palabras)
+                    length = len(text.split())
+                stats_token_lengths.append(length)
 
-    # Limpieza final: Eliminar MPs que se quedaron sin intervenciones tras el filtro de longitud
-    master_interventions = {k: v for k, v in master_interventions.items() if v}
+            # --- Guardado de fila ---
+            row_speakers.append(mp)
+            row_interventions.append(texts)
+        
+        # Añadir fila si tiene oradores válidos
+        if len(row_speakers) > 0:
+            processed_rows.append({
+                'PK': original_pk,
+                'Text': original_text,
+                'Speakers': row_speakers,
+                'Interventions': row_interventions
+            })
 
-    print(f"\nExtracción base completada. Total MPs con intervenciones válidas: {len(master_interventions)}")
+    # 3. Calcular Métricas Finales
+    total_mps_unique = len(stats_mp_counts)
+    counts_values = list(stats_mp_counts.values())
+    
+    statistics = {
+        "Total Documents (Initiatives)": len(processed_rows),
+        "Total Unique MPs": total_mps_unique,
+        "Total Interventions Extracted": sum(counts_values) if counts_values else 0,
+        "Total Tokens in Corpus": sum(stats_token_lengths),
+        
+        # Stats por Diputado (Balanceo de clases)
+        "Interventions per MP (Min)": min(counts_values) if counts_values else 0,
+        "Interventions per MP (Max)": max(counts_values) if counts_values else 0,
+        "Interventions per MP (Avg)": round(np.mean(counts_values), 2) if counts_values else 0,
+        "Interventions per MP (Median)": round(np.median(counts_values), 2) if counts_values else 0,
+        
+        # Stats por Intervención (Context Window)
+        "Tokens per Intervention (Min)": min(stats_token_lengths) if stats_token_lengths else 0,
+        "Tokens per Intervention (Max)": max(stats_token_lengths) if stats_token_lengths else 0,
+        "Tokens per Intervention (Avg)": round(np.mean(stats_token_lengths), 2) if stats_token_lengths else 0,
+    }
 
-    # 3. Generación de Subconjuntos
-    for name, threshold in THRESHOLDS.items():
-        print(f"\n--- Generando subset: {name} (Min Intervenciones: {threshold}) ---")
-        
-        # Filtrar diccionario por número de intervenciones acumuladas
-        if threshold == 0:
-            subset_data = master_interventions
-        else:
-            subset_data = {
-                k: v for k, v in master_interventions.items() 
-                if len(v) >= threshold
-            }
-        
-        if not subset_data:
-            print(f"  [!] Alerta: El subset '{name}' está vacío. Se omitirá.")
-            continue
+    # 4. Crear Mapeo y Vectores Label
+    sorted_mps = sorted(list(stats_mp_counts.keys()))
+    mp_to_index = {mp: idx for idx, mp in enumerate(sorted_mps)}
+    num_classes = len(sorted_mps)
+    
+    print(f"\nUniverso de MPs: {num_classes}. Generando columna 'label' vectorizada...")
 
-        # Calcular estadísticas
-        subset_stats = calculate_statistics(subset_data, tokenizer)
+    # 5. Segunda Pasada: Vectorización
+    final_data = []
+    for row in tqdm(processed_rows, desc="Vectorizing"):
+        label_vector = np.zeros(num_classes, dtype=int)
+        for speaker in row['Speakers']:
+            if speaker in mp_to_index:
+                label_vector[mp_to_index[speaker]] = 1
         
-        print(f"  MPs: {subset_stats['Total MPs']} | Intervenciones: {subset_stats['Total Interventions']}")
-        
-        # Guardar
-        save_subset(name, subset_data, subset_stats)
+        row['label'] = label_vector.tolist()
+        final_data.append(row)
+
+    # 6. Guardado Final
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    
+    # Dataset HF
+    print(f"Guardando dataset HF en {OUTPUT_DIR}...")
+    hf_dataset = Dataset.from_list(final_data)
+    hf_dataset.save_to_disk(OUTPUT_DIR)
+    
+    # Mapeo MP -> ID
+    mapping_path = os.path.join(OUTPUT_DIR, "mp_mapping.json")
+    with open(mapping_path, 'w', encoding='utf-8') as f:
+        json.dump({
+            "id2label": {i: mp for i, mp in enumerate(sorted_mps)},
+            "label2id": mp_to_index
+        }, f, ensure_ascii=False, indent=4)
+
+    # Estadísticas
+    save_statistics(OUTPUT_DIR, statistics)
+
+    print("\n[RESUMEN ESTADÍSTICO]")
+    for k, v in statistics.items():
+        print(f"  - {k}: {v}")
+
+    print(f"\n[OK] Proceso completado exitosamente.")
 
 if __name__ == "__main__":
     main()
