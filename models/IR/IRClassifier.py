@@ -1,79 +1,138 @@
 import numpy as np
-import json
 import os
+import json
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from datasets import load_from_disk
+from tqdm import tqdm
+from nltk.corpus import stopwords
+import nltk
 
-from models.ML.ParliamentaryVectorization import ParliamentaryVectorization
-from models.ML.PULKMeans import PULKMeans
+# Imports de tu proyecto
 from eval.Evaluator import Evaluator
-from utils import SEED
 
-class IRClassifier:
-    def __init__(self, subset_path):
-        self.subset_path = subset_path
-        self.vectorizer_engine = ParliamentaryVectorization(subset_path)
-        self.mp_profiles = {} # Diccionario: {mp_name: vector_centroide}
-        self.mp_list = []      # Lista ordenada para mantener consistencia en la matriz
+class ManualIRPipeline:
+    def __init__(self, dataset_path):
+        self.dataset_path = dataset_path
+        self.vectorizer = None
+        self.profiles_matrix = None # Matriz (N_MPs, Vocabulario)
+        self.mp_names_ordered = []  # Para saber quién es la fila i
+        
+        # Cargar mapeo para asegurar el orden correcto de los IDs
+        with open(os.path.join(dataset_path, "mp_mapping.json"), 'r') as f:
+            mapping = json.load(f)
+            # Ordenamos por ID para que la fila 0 sea el MP con ID 0, etc.
+            self.id2label = {int(k): v for k, v in mapping['id2label'].items()}
+            self.num_mps = len(self.id2label)
 
-    def run_evaluation(self):
-        print(f"--- INICIANDO BASELINE IR (Vector Space Model) ---")
+    def _create_profiles(self):
+        """
+        Crea un 'Macro-Documento' por diputado concatenando todo su TRAIN.
+        Entrena el TF-IDF sobre estos perfiles.
+        """
+        print("1. Construyendo Perfiles de Diputados (Estrategia ir-p)...")
+        train_ds = load_from_disk(self.dataset_path)['train']
         
-        # 1. Vectorización Global (Train)
-        print("1. Vectorizando Corpus de Entrenamiento...")
-        self.vectorizer_engine.load_and_vectorize()
+        # Diccionario acumulador: {mp_id: [lista_textos]}
+        mp_texts = {i: [] for i in range(self.num_mps)}
         
-        # 2. Construir PERFILES de Diputados (Centroides)
-        print("2. Construyendo perfiles vectoriales (Centroides)...")
-        # Obtenemos la lista de diputados ordenada
-        self.mp_list = sorted(list(self.vectorizer_engine.mp_indices.keys()))
-        
-        # Pre-reservamos una matriz para los perfiles: (N_Diputados, N_Features)
-        n_features = self.vectorizer_engine.tfidf_matrix.shape[1]
-        profiles_matrix = np.zeros((len(self.mp_list), n_features))
-        
-        for i, mp_name in enumerate(self.mp_list):
-            # Obtenemos sus documentos de Train
-            P_indices = self.vectorizer_engine.mp_indices[mp_name]
-            P_matrix = self.vectorizer_engine.tfidf_matrix[P_indices]
+        for row in tqdm(train_ds, desc="Agrupando textos"):
+            speakers = row['Speakers']
+            interventions = row['Interventions']
             
-            # Calculamos el CENTROIDE (promedio de sus vectores TF-IDF)
-            # Esto representa el "tema promedio" o "vocabulario medio" del diputado
-            centroid = np.array(P_matrix.mean(axis=0)).flatten()
-            profiles_matrix[i] = centroid
+            # Mapeamos nombre -> ID para guardar en el sitio correcto
+            # Necesitamos el mapa inverso momentáneamente
+            label2id = {v: k for k, v in self.id2label.items()}
             
-        print(f"   [OK] Perfiles creados para {len(self.mp_list)} diputados.")
+            for sp, texts in zip(speakers, interventions):
+                if sp in label2id:
+                    mid = label2id[sp]
+                    mp_texts[mid].extend(texts)
+        
+        # Crear la lista de documentos para el TF-IDF
+        # El orden de esta lista DEBE ser por ID creciente (0, 1, 2...)
+        corpus_profiles = []
+        for i in range(self.num_mps):
+            # Unimos todo el texto del diputado en un solo string
+            full_text = " ".join(mp_texts[i])
+            corpus_profiles.append(full_text)
+            self.mp_names_ordered.append(self.id2label[i])
 
-        # 3. Preparar Datos de Test
-        test_path = os.path.join(self.subset_path, "test.json")
-        with open(test_path, 'r', encoding='utf-8') as f:
-            test_data_json = json.load(f)
+        # Vectorización TF-IDF
+        print("2. Entrenando TF-IDF Vectorizer...")
+        try:
+            nltk.data.find('corpora/stopwords')
+        except LookupError:
+            nltk.download('stopwords')
+        spanish_stop_words = stopwords.words('spanish')
+
+        self.vectorizer = TfidfVectorizer(
+            stop_words=spanish_stop_words,
+            min_df=5, 
+            sublinear_tf=True # 1 + log(tf) -> Importante para documentos largos concatenados
+        )
+        
+        # Matriz (N_MPs, Vocabulario)
+        self.profiles_matrix = self.vectorizer.fit_transform(corpus_profiles)
+        print(f"   [OK] Perfiles vectorizados. Shape: {self.profiles_matrix.shape}")
+
+    def _optimize_threshold(self, y_true, scores):
+        """Busca el mejor umbral en DEV para maximizar Micro-F1"""
+        print("\n=== Optimizando Umbral en DEV ===")
+        # Los scores de Coseno van de 0 a 1.
+        thresholds = np.linspace(0.01, 1, 50) # Rango típico para TF-IDF
+        print(thresholds)
+        best_f1 = -1.0
+        best_th = 0.05
+        
+        for th in thresholds:
+            y_pred_bin = (scores >= th).astype(int)
             
-        X_test_texts = []
-        y_test_true_indices = []
-        mp_to_idx = {mp: i for i, mp in enumerate(self.mp_list)}
-        
-        for mp, texts in test_data_json.items():
-            if mp in mp_to_idx:
-                idx = mp_to_idx[mp]
-                for t in texts:
-                    X_test_texts.append(t)
-                    y_test_true_indices.append(idx)
-        
-        print(f"3. Vectorizando {len(X_test_texts)} documentos de Test...")
-        # Usamos el mismo vectorizador de train para transformar test
-        X_test_matrix = self.vectorizer_engine.vectorizer.transform(X_test_texts)
-        y_test_true_indices = np.array(y_test_true_indices)
+            # Cálculo rápido de F1 Micro
+            tp = np.sum((y_pred_bin == 1) & (y_true == 1))
+            fp = np.sum((y_pred_bin == 1) & (y_true == 0))
+            fn = np.sum((y_pred_bin == 0) & (y_true == 1))
+            
+            p = tp / (tp + fp) if (tp + fp) > 0 else 0
+            r = tp / (tp + fn) if (tp + fn) > 0 else 0
+            f1 = 2 * (p * r) / (p + r) if (p + r) > 0 else 0
+            
+            if f1 > best_f1:
+                best_f1 = f1
+                best_th = th
+                
+        print(f" -> Mejor Umbral: {best_th:.4f} (F1: {best_f1:.4f})")
+        return best_th
 
-        # 4. Cálculo de Similitud (Matriz Global de Scores)
-        print("4. Calculando Similitud Coseno (Query vs Profiles)...")
-        # cosine_similarity devuelve una matriz (n_samples_X, n_samples_Y)
-        # Aquí: (Docs_Test, Diputados) -> Exactamente lo que necesitamos
-        global_scores = cosine_similarity(X_test_matrix, profiles_matrix)
+    def run_full_evaluation(self):
+        # 1. Train (Crear Índice)
+        self._create_profiles()
         
-        # 5. Evaluación
-        print("\n5. Calculando métricas...")
-        evaluator = Evaluator(self.mp_list)
-        metrics = evaluator.compute_all_metrics(y_test_true_indices, global_scores)
+        # 2. Validación (Dev)
+        print("\n3. Validando en DEV...")
+        dev_ds = load_from_disk(self.dataset_path)['dev']
+        X_dev = self.vectorizer.transform(dev_ds['Text'])
+        y_dev_true = np.array(dev_ds['label'])
+        
+        # Similitud Coseno: (Docs_Dev, Vocab) x (MPs, Vocab).T -> (Docs_Dev, MPs)
+        scores_dev = cosine_similarity(X_dev, self.profiles_matrix)
+        
+        best_threshold = self._optimize_threshold(y_dev_true, scores_dev)
+        
+        # 3. Test
+        print("\n4. Evaluando en TEST...")
+        test_ds = load_from_disk(self.dataset_path)['test']
+        X_test = self.vectorizer.transform(test_ds['Text'])
+        y_test_true = np.array(test_ds['label'])
+        
+        scores_test = cosine_similarity(X_test, self.profiles_matrix)
+        
+        # Evaluación
+        evaluator = Evaluator(k_values=[1, 5, 10, 20])
+        # Pasamos el umbral optimizado
+        metrics = evaluator.compute_all_metrics(y_test_true, scores_test, threshold=best_threshold)
         evaluator.print_report(metrics)
         
         return metrics
+    
+
