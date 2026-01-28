@@ -13,11 +13,12 @@ from eval.Evaluator import Evaluator
 from models.Recommender import Recommender
 
 class SparseTfidfRecommender(Recommender):
-    def __init__(self, dataset_path):
+    def __init__(self, dataset_path: str, lang: str = "spanish"):
         super().__init__(dataset_path)
         self.vectorizer = None
         self.profiles_matrix = None # Matriz (N_MPs, Vocabulario)
         self.mp_names_ordered = []  # Para saber quién es la fila i
+        self.lang = lang
         
         # Cargar mapeo para asegurar el orden correcto de los IDs
         with open(os.path.join(dataset_path, "mp_mapping.json"), 'r') as f:
@@ -65,10 +66,10 @@ class SparseTfidfRecommender(Recommender):
             nltk.data.find('corpora/stopwords')
         except LookupError:
             nltk.download('stopwords')
-        spanish_stop_words = stopwords.words('spanish')
+        stop_words = stopwords.words(self.lang)
 
         self.vectorizer = TfidfVectorizer(
-            stop_words=spanish_stop_words,
+            stop_words=stop_words,
             min_df=5, 
             sublinear_tf=True # 1 + log(tf) -> Importante para documentos largos concatenados
         )
