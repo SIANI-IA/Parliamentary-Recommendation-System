@@ -88,11 +88,11 @@ class Evaluator:
         print("\n=== REPORTE DE EVALUACIÓN MULTI-LABEL ===")
         print(">> CLASIFICACIÓN (Threshold-based)")
         print(f"   Accuracy (Subset):   {metrics['Accuracy (Subset)']:.4f}")
-        print(f"   Micro F1-Score:      {metrics['F1-Score (Micro)']:.4f}  <-- CLAVE PARA PAPER")
+        print(f"   Micro F1-Score:      {metrics['F1-Score (Micro)']:.4f}  <-- Important for classification")
         print(f"   Macro F1-Score:      {metrics['F1-Score (Macro)']:.4f}")
         
         print("\n>> RANKING / IR")
-        print(f"   MAP:                 {metrics['MAP']:.4f}  <-- NUEVA MÉTRICA PRINCIPAL")
+        print(f"   MAP:                 {metrics['MAP']:.4f}  <-- Important for ranking")
         print(f"   nDCG:                {metrics['nDCG']:.4f}")
         for k in self.k_values:
             print(f"   Recall@{k:<2}:           {metrics[f'Recall@{k}']:.4f}")

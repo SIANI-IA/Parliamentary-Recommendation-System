@@ -10,12 +10,13 @@ from tqdm import tqdm
 from models.ML.ParliamentaryVectorization import ParliamentaryVectorization
 from models.ML.PULKMeans import PULKMeans
 from eval.Evaluator import Evaluator
+from models.Recommender import Recommender
 
 from utils import SEED
 
-class PULKMRecommender:
-    def __init__(self, dataset_path, max_iter_pulk=10, lang='spanish'):
-        self.dataset_path = dataset_path
+class PULKMRecommender(Recommender):
+    def __init__(self, dataset_path: str, max_iter_pulk=10, lang='spanish'):
+        super().__init__(dataset_path)
         self.vectorizer_engine = ParliamentaryVectorization(dataset_path, lang=lang)
         self.max_iter_pulk = max_iter_pulk
         self.best_threshold = 0.0 # Valor por defecto
@@ -81,9 +82,7 @@ class PULKMRecommender:
         thresholds_to_test = np.linspace(-1.5, 1.5, 50) # Probamos 50 valores entre -1.5 y 1.5
         best_f1 = -1.0
         best_th = 0.0
-        
-        evaluator = Evaluator() # Instancia temporal
-        
+                
         # Iteramos buscando el mejor F1 Micro
         for th in thresholds_to_test:
             # Calculamos métricas rápidas (sin imprimir reporte)
