@@ -27,6 +27,9 @@ class SparseTfidfRecommender(Recommender):
             self.id2label = {int(k): v for k, v in mapping['id2label'].items()}
             self.num_mps = len(self.id2label)
 
+    def __str__(self):
+        return f"SparseTfidfRecommender"
+
     def _create_profiles(self):
         """
         Crea un 'Macro-Documento' por diputado concatenando todo su TRAIN.
@@ -137,11 +140,13 @@ class SparseTfidfRecommender(Recommender):
         dataset_name = os.path.basename(self.dataset_path.rstrip('/'))
         folder_name = os.path.join(self.folder_to_save_results, dataset_name, self.__str__())
         self.save_artifacts(
-            output_dir=folder_name, 
+            output_dir=folder_name,
+            model_name=self.__str__(),
             y_true=y_test_true, 
             scores=scores_test, 
             threshold=best_threshold, 
-            metrics=metrics
+            metrics=metrics,
+            mp_names_ordered=self.mp_names_ordered,
         )
         
         return metrics

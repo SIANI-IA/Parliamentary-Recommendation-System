@@ -14,23 +14,23 @@ class Recommender:
     def __str__(self):
         return f"Recommender"
 
-    def save_artifacts(self, output_dir, y_true, scores, threshold, metrics):
+    def save_artifacts(self, model_name, output_dir, y_true, scores, threshold, metrics, mp_names_ordered):
         """
         Guarda los resultados de la inferencia para análisis posterior.
         """
         os.makedirs(output_dir, exist_ok=True)
         
         results_data = {
-            "model_name": self.__str__(),
+            "model_name": model_name,
             "threshold": threshold,
             "metrics": metrics,
-            "mp_names": self.mp_names_ordered,  # ¡Muy importante!
+            "mp_names": mp_names_ordered,       # ¡Muy importante!
             "y_true": y_true,                   # Ground truth
             "scores": scores                    # Matriz de predicciones
         }
         
         # Guardamos como .pkl
-        file_path = os.path.join(output_dir, f"{self.__str__()}_results.pkl")
+        file_path = os.path.join(output_dir, f"{model_name}_results.pkl")
         with open(file_path, "wb") as f:
             pickle.dump(results_data, f)
             

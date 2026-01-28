@@ -19,8 +19,9 @@ class DenseEmbeddingRecommender(Recommender):
             token_limit: int = 512,
             use_intervention_level: bool = False  # <--- NUEVO FLAG
         ):
-        self.dataset_path = dataset_path
+        super().__init__(dataset_path)
         self.batch_size = batch_size
+        self.token_limit = token_limit
         self.use_intervention_level = use_intervention_level # True: Max Score (ir-i), False: Centroid (ir-p)
         
         # Configuración del dispositivo (CUDA si es posible)
@@ -30,7 +31,7 @@ class DenseEmbeddingRecommender(Recommender):
         
         # Cargamos el modelo SBERT
         self.model = SentenceTransformer(model_name, device=self.device, trust_remote_code=True)
-        self.model.max_seq_length = token_limit
+        self.model.max_seq_length = self.token_limit
         
         self.profiles_matrix = None 
         # Si es Centroid: (N_MPs, Dim)
@@ -43,6 +44,11 @@ class DenseEmbeddingRecommender(Recommender):
             mapping = json.load(f)
             self.id2label = {int(k): v for k, v in mapping['id2label'].items()}
             self.num_mps = len(self.id2label)
+
+        self.mp_names_ordered = [self.id2label[i] for i in range(self.num_mps)]
+
+    def __str__(self):
+        return f"DenseEmbeddingRecommender({'Intervention' if self.use_intervention_level else 'Centroid'})_token{self.token_limit}"
 
     def _create_profiles(self):
         """
@@ -210,11 +216,13 @@ class DenseEmbeddingRecommender(Recommender):
         dataset_name = os.path.basename(self.dataset_path.rstrip('/'))
         folder_name = os.path.join(self.folder_to_save_results, dataset_name, self.__str__())
         self.save_artifacts(
-            output_dir=folder_name, 
+            output_dir=folder_name,
+            model_name=self.__str__(),
             y_true=y_test_true, 
             scores=scores_test, 
             threshold=best_threshold, 
-            metrics=metrics
+            metrics=metrics,
+            mp_names_ordered=self.mp_names_ordered,
         )
         
         return metrics
