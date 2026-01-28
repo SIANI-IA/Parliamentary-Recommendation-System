@@ -1,1 +1,2 @@
 SEED = 123
+FOLDER_TO_SAVE_RESULTS = "results"

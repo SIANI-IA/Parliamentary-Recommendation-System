@@ -133,6 +133,16 @@ class SparseTfidfRecommender(Recommender):
         # Pasamos el umbral optimizado
         metrics = evaluator.compute_all_metrics(y_test_true, scores_test, threshold=best_threshold)
         evaluator.print_report(metrics)
+
+        dataset_name = os.path.basename(self.dataset_path.rstrip('/'))
+        folder_name = os.path.join(self.folder_to_save_results, dataset_name, self.__str__())
+        self.save_artifacts(
+            output_dir=folder_name, 
+            y_true=y_test_true, 
+            scores=scores_test, 
+            threshold=best_threshold, 
+            metrics=metrics
+        )
         
         return metrics
     

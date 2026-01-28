@@ -21,6 +21,9 @@ class PULKMRecommender(Recommender):
         self.max_iter_pulk = max_iter_pulk
         self.best_threshold = 0.0 # Valor por defecto
 
+    def __str__(self):
+        return f"PULKMRecommender_maxiter{self.max_iter_pulk}"
+
     def _train_models(self, mp_list):
         """Entrena los N clasificadores SVM y devuelve una lista de modelos."""
         trained_models = []
@@ -147,5 +150,15 @@ class PULKMRecommender(Recommender):
         metrics = evaluator.compute_all_metrics(y_test_true, scores_test, threshold=self.best_threshold)
         
         evaluator.print_report(metrics)
+
+        dataset_name = os.path.basename(self.dataset_path.rstrip('/'))
+        folder_name = os.path.join(self.folder_to_save_results, dataset_name, self.__str__())
+        self.save_artifacts(
+            output_dir=folder_name, 
+            y_true=y_test_true, 
+            scores=scores_test, 
+            threshold=self.best_threshold, 
+            metrics=metrics
+        )
         
         return metrics
