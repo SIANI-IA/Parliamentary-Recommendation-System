@@ -10,10 +10,11 @@ import nltk
 
 # Imports de tu proyecto
 from eval.Evaluator import Evaluator
+from models.Recommender import Recommender
 
-class ManualIRPipeline:
+class SparseTfidfRecommender(Recommender):
     def __init__(self, dataset_path):
-        self.dataset_path = dataset_path
+        super().__init__(dataset_path)
         self.vectorizer = None
         self.profiles_matrix = None # Matriz (N_MPs, Vocabulario)
         self.mp_names_ordered = []  # Para saber quién es la fila i

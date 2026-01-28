@@ -8,8 +8,9 @@ from tqdm import tqdm
 
 # Importamos tu evaluador
 from eval.Evaluator import Evaluator
+from models.Recommender import Recommender
 
-class ManualDensePipeline:
+class DenseEmbeddingRecommender(Recommender):
     def __init__(
             self, 
             dataset_path: str, 
@@ -178,7 +179,7 @@ class ManualDensePipeline:
         print(f" -> Mejor Umbral: {best_th:.4f} (F1: {best_f1:.4f})")
         return best_th
 
-    def run_full_evaluation(self):
+    def run_evaluation(self):
         # 1. Crear Perfiles (TRAIN)
         self._create_profiles()
         
