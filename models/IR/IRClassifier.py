@@ -81,7 +81,6 @@ class ManualIRPipeline:
         print("\n=== Optimizando Umbral en DEV ===")
         # Los scores de Coseno van de 0 a 1.
         thresholds = np.linspace(0.01, 1, 50) # Rango típico para TF-IDF
-        print(thresholds)
         best_f1 = -1.0
         best_th = 0.05
         
@@ -104,7 +103,7 @@ class ManualIRPipeline:
         print(f" -> Mejor Umbral: {best_th:.4f} (F1: {best_f1:.4f})")
         return best_th
 
-    def run_full_evaluation(self):
+    def run_evaluation(self):
         # 1. Train (Crear Índice)
         self._create_profiles()
         

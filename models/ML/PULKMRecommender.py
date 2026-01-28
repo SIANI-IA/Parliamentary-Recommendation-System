@@ -14,9 +14,9 @@ from eval.Evaluator import Evaluator
 from utils import SEED
 
 class PULKMRecommender:
-    def __init__(self, dataset_path, max_iter_pulk=10):
+    def __init__(self, dataset_path, max_iter_pulk=10, lang='spanish'):
         self.dataset_path = dataset_path
-        self.vectorizer_engine = ParliamentaryVectorization(dataset_path)
+        self.vectorizer_engine = ParliamentaryVectorization(dataset_path, lang=lang)
         self.max_iter_pulk = max_iter_pulk
         self.best_threshold = 0.0 # Valor por defecto
 
