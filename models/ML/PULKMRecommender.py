@@ -111,7 +111,7 @@ class PULKMRecommender(Recommender):
         print(f" -> Mejor Umbral encontrado: {best_th:.4f} (Micro F1 en Dev: {best_f1:.4f})")
         return best_th
 
-    def run_full_pipeline(self):
+    def run_evaluation(self):
         # 1. Vectorización (TRAIN)
         print("\n=== FASE 1: Vectorización ===")
         self.vectorizer_engine.load_and_vectorize()

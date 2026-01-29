@@ -23,6 +23,7 @@ class DenseEmbeddingRecommender(Recommender):
         self.batch_size = batch_size
         self.token_limit = token_limit
         self.use_intervention_level = use_intervention_level # True: Max Score (ir-i), False: Centroid (ir-p)
+        self.model_name = os.path.basename(model_name)
         
         # Configuración del dispositivo (CUDA si es posible)
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -48,7 +49,7 @@ class DenseEmbeddingRecommender(Recommender):
         self.mp_names_ordered = [self.id2label[i] for i in range(self.num_mps)]
 
     def __str__(self):
-        return f"DenseEmbeddingRecommender({'Intervention' if self.use_intervention_level else 'Centroid'})_token{self.token_limit}"
+        return f"DenseEmbeddingRecommender({self.model_name}_{'Intervention' if self.use_intervention_level else 'Centroid'})_token{self.token_limit}"
 
     def _create_profiles(self):
         """
@@ -186,8 +187,41 @@ class DenseEmbeddingRecommender(Recommender):
         return best_th
 
     def run_evaluation(self):
-        # 1. Crear Perfiles (TRAIN)
-        self._create_profiles()
+        
+        dataset_name = os.path.basename(self.dataset_path.rstrip('/'))
+        folder_name = os.path.join(self.folder_to_save_results, dataset_name, self.__str__())
+        os.makedirs(folder_name, exist_ok=True)
+        
+        profiles_path = os.path.join(folder_name, "profiles_matrix.npy")
+        map_path = os.path.join(folder_name, "mp_rows_map.json")
+
+        # Verificamos si existen AMBOS archivos
+        if os.path.exists(profiles_path) and (not self.use_intervention_level or os.path.exists(map_path)):
+            print(f"Cargando perfiles desde: {folder_name}")
+            self.profiles_matrix = np.load(profiles_path)
+            
+            # Solo necesitamos cargar el mapa si estamos en modo Intervention (Max Score)
+            if self.use_intervention_level:
+                with open(map_path, 'r') as f:
+                    loaded_map = json.load(f)
+                    # IMPORTANTE: JSON convierte las claves (int) a strings. 
+                    # Debemos convertirlas de nuevo a int.
+                    self.mp_to_rows_map = {int(k): v for k, v in loaded_map.items()}
+                print(f"   [OK] Mapa de filas cargado ({len(self.mp_to_rows_map)} MPs).")
+                
+        else:
+            # 1. Crear Perfiles (TRAIN)
+            self._create_profiles()
+
+            # Guardar perfiles
+            np.save(profiles_path, self.profiles_matrix)
+            print(f"   [OK] Matriz de perfiles guardada.")
+
+            # Guardar el mapa si estamos en modo Intervention
+            if self.use_intervention_level:
+                with open(map_path, 'w') as f:
+                    json.dump(self.mp_to_rows_map, f)
+                print(f"   [OK] Mapa de filas guardado en: {map_path}")
         
         # 2. Validación (DEV)
         print("\n2. Validando en DEV...")
