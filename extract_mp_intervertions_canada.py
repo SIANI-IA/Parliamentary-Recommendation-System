@@ -7,9 +7,12 @@ from datasets import load_from_disk, Dataset
 from tqdm import tqdm
 from typing import Dict, Any
 
+from transformers import AutoTokenizer
+
 # --- CONFIGURACIÓN ---
 INPUT_DS_PATH = "/home/miguel/data/raw/CA_dataset"  # Ruta a tu dataset original
 OUTPUT_DIR = "dataset/canada-rec"            # Carpeta de salida
+MODEL_ID = "unsloth/Meta-Llama-3.1-8B-Instruct"
 MIN_CHAR_CONTENT = 300                               # Mínimo caracteres para guardar intervención
 
 # Configuración de Estadísticas
@@ -123,6 +126,13 @@ def main():
     except Exception as e:
         print(f"Error cargando dataset: {e}")
         return
+    
+    print(f"Cargando tokenizador ({MODEL_ID}) para estadísticas...")
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    except:
+        print(" [!] No se pudo cargar el tokenizador. Usando conteo de palabras simple como fallback.")
+        tokenizer = None
 
     # 2. Extracción y Recolección de Stats
     print("Procesando textos, extrayendo topics y calculando estadísticas...")
@@ -159,7 +169,7 @@ def main():
                     for t in filtered_texts:
                         # Usamos split() como proxy de tokens. 
                         # Si quieres exactitud LLM, usa len(tokenizer.encode(t))
-                        length = len(t.split())
+                        length = len(tokenizer.encode(t)) if tokenizer else len(t.split())
                         stats_token_lengths.append(length)
 
             # Solo añadimos el topic si tiene intervenciones válidas
