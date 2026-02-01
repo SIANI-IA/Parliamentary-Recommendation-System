@@ -58,16 +58,31 @@ class Evaluator:
         # Definición: De todos los oradores reales, ¿qué fracción aparece en el Top-K predicho?
         n_samples = y_true_matrix.shape[0]
         recalls_at_k = {k: 0.0 for k in self.k_values}
+
+        # Variable para acumular la R-Precision
+        r_precision_sum = 0.0
         
         for i in range(n_samples):
             true_indices = np.where(y_true_matrix[i] == 1)[0]
-            if len(true_indices) == 0:
+            R = len(true_indices) # Número de MPs relevantes (Ground Truth)
+            if R == 0:
                 continue # Evitar división por cero si no hay oradores (no debería pasar tras limpieza)
                 
             # Obtener los índices de los K scores más altos
             # argsort ordena ascendente, tomamos el final y damos la vuelta
             scores = y_scores_matrix[i]
             sorted_indices = np.argsort(scores)[::-1]
+
+            # Definición: Precisión en la posición R.
+            # Tomamos exactamente los primeros R elementos del ranking
+            top_r_indices = sorted_indices[:R]
+            
+            # Calculamos aciertos en ese corte dinámico
+            r_hits = len(set(top_r_indices) & set(true_indices))
+            
+            # R-Prec = (Relevantes recuperados en Top-R) / R
+            # Nota: Matemáticamente en este punto Precision@R == Recall@R
+            r_precision_sum += r_hits / R
             
             for k in self.k_values:
                 top_k_indices = sorted_indices[:k]
@@ -82,6 +97,8 @@ class Evaluator:
         for k in self.k_values:
             metrics[f"Recall@{k}"] = recalls_at_k[k] / n_samples
 
+        metrics["R-Precision"] = r_precision_sum / n_samples
+
         return metrics
 
     def print_report(self, metrics):
@@ -94,6 +111,7 @@ class Evaluator:
         print("\n>> RANKING / IR")
         print(f"   MAP:                 {metrics['MAP']:.4f}  <-- Important for ranking")
         print(f"   nDCG:                {metrics['nDCG']:.4f}")
+        print(f"   R-Precision:         {metrics['R-Precision']:.4f}")
         for k in self.k_values:
             print(f"   Recall@{k:<2}:           {metrics[f'Recall@{k}']:.4f}")
         print("=========================================")
