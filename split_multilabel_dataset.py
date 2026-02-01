@@ -14,8 +14,8 @@ random.seed(SEED)
 np.random.seed(SEED)
 
 # --- CONFIGURACIÓN ---
-INPUT_DIR = "dataset/canada-rec"
-OUTPUT_DIR = "dataset/canada-rec-split"
+INPUT_DIR = "dataset/parcanDeb-rec"
+OUTPUT_DIR = "dataset/parcanDeb-rec-split"
 TINY_SIZE = 50
 
 def main():

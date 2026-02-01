@@ -132,7 +132,7 @@ def generate_latex(df, output_latex="benchmark_table.tex", dataset_name=""):
 
 # --- EJECUCIÓN ---
 if __name__ == "__main__":
-    folder_path = "./results/canada-rec-split"
+    folder_path = "./results/parcanDeb-rec-split"
     dataset_name = os.path.basename(folder_path.rstrip('/'))
     
     if os.path.exists(folder_path):
