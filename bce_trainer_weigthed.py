@@ -47,6 +47,7 @@ parser.add_argument("--seed", type=int, default=SEED)
 parser.add_argument("--epochs", type=int, default=3)
 parser.add_argument("--batch_size", type=int, default=8)
 parser.add_argument("--max_length", type=int, default=512)
+parser.add_argument("--intervention_strategy", type=str, choices=["concat", "split"], default="concat")
 
 args = parser.parse_args()
 initialize_determinism(args.seed)
@@ -73,29 +74,40 @@ def process_train_function(batch):
     
     for i in range(len(batch['PK'])):
         speakers = batch['Speakers'][i]
-        interventions = batch['Interventions'][i]
+        interventions = batch['Interventions'][i] # Lista de listas de strings
         
         if len(speakers) != len(interventions): continue
 
         for speaker_name, intervention_parts in zip(speakers, interventions):
             if speaker_name not in label2id: continue
             
-            full_text = " ".join(intervention_parts)
-            if len(full_text.strip()) < 10: continue
-
-            # SINGLE-LABEL (Solo un 1)
-            label_vec = [0.0] * num_labels
-            speaker_idx = label2id[speaker_name]
-            label_vec[speaker_idx] = 1.0
+            # --- LÓGICA DEL FLAG ---
+            texts_to_add = []
             
-            new_texts.append(full_text)
-            new_labels.append(label_vec)
+            if args.intervention_strategy == "concat":
+                # Opción A: Juntar todo
+                full_text = " ".join(intervention_parts)
+                if len(full_text.strip()) > 5: # Filtro mínimo
+                    texts_to_add.append(full_text)
             
-    # Tokenización "al vuelo" para ahorrar memoria
+            elif args.intervention_strategy == "split":
+                # Opción B: Usar partes individuales
+                for part in intervention_parts:
+                    if len(part.strip()) > 5: # Filtro mínimo para evitar vacíos
+                        texts_to_add.append(part)
+            
+            # Añadimos al dataset lo que hayamos generado
+            for txt in texts_to_add:
+                label_vec = [0.0] * num_labels
+                speaker_idx = label2id[speaker_name]
+                label_vec[speaker_idx] = 1.0
+                
+                new_texts.append(txt)
+                new_labels.append(label_vec)
+            
     tokenized = tokenizer(new_texts, padding="max_length", truncation=True, max_length=args.max_length)
     tokenized["labels"] = new_labels
     return tokenized
-
 # B) FUNCIÓN PARA DEV/TEST (Full Text: 1 Doc -> N MPs)
 # --- BLOQUE NUEVO: MÉTRICAS PARA EL TRAINING LOOP ---
 
