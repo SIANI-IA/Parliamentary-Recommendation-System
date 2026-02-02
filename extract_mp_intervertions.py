@@ -34,7 +34,31 @@ FORBIDDEN_WORDS = {
     
     # Ruido técnico o de ubicación
     "telemáticamente", "telematicamente", "desde", "escaño", 
-    "sede", "fuera", "subinspector", "zacarías" # (Zacarías parece ruido suelto si no tiene apellido)
+    "sede", "fuera", "subinspector", "zacarías", # (Zacarías parece ruido suelto si no tiene apellido)
+
+    "recurso", "fácil", "facil", "podemos", "grupo", "parlamentario", "consejera"
+
+}
+
+TYPO_CORRECTIONS = {
+    "Ruano Léon": "Ruano León",
+    "Ramos Q Uintana": "Ramos Quintana",
+    "Fdez De La Puente Armas": "Fernández De La Puente Armas",
+    "Ponce Gonzalez": "Ponce González",
+    "Alemán Santanta": "Alemán Santana",
+    "Miguel Cabrera Pérez": "Cabrera Pérez",
+    "Cabrera Pérez Camacho": "Cabrera Pérez",
+    "García Mártínez": "García Martínez",
+    "Díaz": None,
+    "Rodríguez": None,
+    "Héctor": None,
+    "Mario": None,
+    "Ana": None,
+    "Jorge": None,
+    "Jorge Alberto": None,
+    "Juan Alberto": None,
+    "Pedro Manuel": None,
+    "María Esther": None
 }
 
 def clean_speaker_name_universal(raw_segment):
@@ -84,6 +108,9 @@ def clean_speaker_name_universal(raw_segment):
     # Unificamos Vicepresidentas con Presidente/a (actúan como moderadores)
     if "Vicepresidenta" in clean_text or "President" in clean_text:
         return None
+    
+    if clean_text in TYPO_CORRECTIONS:
+        return TYPO_CORRECTIONS[clean_text]
     
     # --- ZONA DE VALIDACIÓN (FILTROS) ---
     
