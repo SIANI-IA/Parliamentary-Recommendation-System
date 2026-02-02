@@ -47,6 +47,7 @@ parser.add_argument("--epochs", type=int, default=3)
 parser.add_argument("--batch_size", type=int, default=8)
 parser.add_argument("--max_length", type=int, default=512)
 parser.add_argument("--intervention_strategy", type=str, choices=["concat", "split"], default="concat")
+parser.add_argument("--label_strategy", type=str, choices=["author", "all_participants"], default="author")
 
 args = parser.parse_args()
 initialize_determinism(args.seed)
@@ -107,6 +108,57 @@ def process_train_function(batch):
     tokenized = tokenizer(new_texts, padding="max_length", truncation=True, max_length=args.max_length)
     tokenized["labels"] = new_labels
     return tokenized
+
+def process_train_function_2(batch):
+    new_texts = []
+    new_labels = []
+    
+    for i in range(len(batch['PK'])):
+        speakers = batch['Speakers'][i] # Lista de todos los participantes del doc
+        interventions = batch['Interventions'][i] # Lista de listas de textos
+        
+        if len(speakers) != len(interventions): continue
+
+        # --- OPTIMIZACIÓN: Pre-calcular el vector del documento completo ---
+        # Si la estrategia es 'all_participants', el vector Y es idéntico para todas 
+        # las frases de este documento. Lo calculamos una vez aquí.
+        doc_wide_label_vec = None
+        if args.label_strategy == "all_participants":
+            doc_wide_label_vec = [0.0] * num_labels
+            for sp in speakers:
+                if sp in label2id:
+                    doc_wide_label_vec[label2id[sp]] = 1.0
+
+        # Iteramos sobre cada orador y sus textos
+        for speaker_name, intervention_parts in zip(speakers, interventions):
+            if speaker_name not in label2id: continue
+            
+            # 1. Preparar TEXTO (Split vs Concat)
+            texts_to_process = []
+            if args.intervention_strategy == "concat":
+                full_text = " ".join(intervention_parts)
+                if len(full_text.strip()) > 5: 
+                    texts_to_process.append(full_text)
+            elif args.intervention_strategy == "split":
+                texts_to_process = [t for t in intervention_parts if len(t.strip()) > 5]
+
+            # 2. Preparar ETIQUETA (Author vs All Participants)
+            if args.label_strategy == "all_participants":
+                # Nueva estrategia: Usamos el vector común del documento
+                label_vec = doc_wide_label_vec
+            else:
+                # Estrategia clásica ("author"): Solo el orador actual es 1
+                label_vec = [0.0] * num_labels
+                label_vec[label2id[speaker_name]] = 1.0
+            
+            # 3. Generar muestras
+            for text in texts_to_process:
+                new_texts.append(text)
+                new_labels.append(label_vec)
+    
+    tokenized = tokenizer(new_texts, padding="max_length", truncation=True, max_length=args.max_length)
+    tokenized["labels"] = new_labels
+    return tokenized
 # B) FUNCIÓN PARA DEV/TEST (Full Text: 1 Doc -> N MPs)
 # --- BLOQUE NUEVO: MÉTRICAS PARA EL TRAINING LOOP ---
 
@@ -151,7 +203,7 @@ def process_eval_function(batch):
 
 print("[-] Procesando TRAIN (Intervenciones individuales)...")
 train_dataset = raw_dataset['train'].map(
-    process_train_function, 
+    process_train_function_2, 
     batched=True, 
     remove_columns=raw_dataset['train'].column_names
 )
