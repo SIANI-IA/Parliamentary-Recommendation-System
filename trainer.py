@@ -37,8 +37,8 @@ parser.add_argument("--model_name", type=str, default="jhu-clsp/mmBERT-small")
 parser.add_argument("--mode", type=str, choices=["full", "lora", "qlora"], default="full")
 parser.add_argument("--output_dir", type=str, default="./results_dual")
 parser.add_argument("--seed", type=int, default=SEED)
-parser.add_argument("--intervention_strategy", type=str, choices=["concat", "split"], default="concat")
-parser.add_argument("--label_strategy", type=str, choices=["author", "all_participants"], default="author")
+parser.add_argument("--intervention_strategy", type=str, choices=["concat", "split"], default="split")
+parser.add_argument("--label_strategy", type=str, choices=["author", "all_participants"], default="all_participants")
 
 # type of loss
 parser.add_argument("--loss_type", type=str, choices=["bce", "nnpuloss"], default="bce")
@@ -63,6 +63,22 @@ parser.add_argument("--nnpu_priors", type=float, default=0.05, help="Estimated p
 args = parser.parse_args()
 initialize_determinism(args.seed)
 
+model_name_base = os.path.basename(args.model_name.replace("/", "_"))
+
+if args.loss_type == "bce":
+    trainer_name = f"BCETrainer_{args.pos_weight_type}"
+else:
+    trainer_name = f"nnPUTrainer_{args.nnpu_priors}"
+
+full_experiment_name = (
+    f"{model_name_base}_{args.mode}_"
+    f"{trainer_name}_"
+    f"epochs{args.epochs}_"
+    f"bs{args.batch_size}_"
+    f"lr{args.learning_rate}_"
+    f"maxlen{args.max_length}_"
+)
+
 # --- 2. CARGA DE DATOS ---
 print(f"[-] Cargando mapeo...")
 with open(args.mapping_path, 'r') as f:
@@ -79,48 +95,8 @@ tokenizer = AutoTokenizer.from_pretrained(args.model_name)
 # --- 3. PREPROCESAMIENTO DIFERENCIADO ---
 
 # A) FUNCIÓN PARA TRAIN (Explosión: 1 Intervención -> 1 MP)
+
 def process_train_function(batch):
-    new_texts = []
-    new_labels = []
-    
-    for i in range(len(batch['PK'])):
-        speakers = batch['Speakers'][i]
-        interventions = batch['Interventions'][i] # Lista de listas de strings
-        
-        if len(speakers) != len(interventions): continue
-
-        for speaker_name, intervention_parts in zip(speakers, interventions):
-            if speaker_name not in label2id: continue
-            
-            # --- LÓGICA DEL FLAG ---
-            texts_to_add = []
-            
-            if args.intervention_strategy == "concat":
-                # Opción A: Juntar todo
-                full_text = " ".join(intervention_parts)
-                if len(full_text.strip()) > 5: # Filtro mínimo
-                    texts_to_add.append(full_text)
-            
-            elif args.intervention_strategy == "split":
-                # Opción B: Usar partes individuales
-                for part in intervention_parts:
-                    if len(part.strip()) > 5: # Filtro mínimo para evitar vacíos
-                        texts_to_add.append(part)
-            
-            # Añadimos al dataset lo que hayamos generado
-            for txt in texts_to_add:
-                label_vec = [0.0] * num_labels
-                speaker_idx = label2id[speaker_name]
-                label_vec[speaker_idx] = 1.0
-                
-                new_texts.append(txt)
-                new_labels.append(label_vec)
-            
-    tokenized = tokenizer(new_texts, padding="max_length", truncation=True, max_length=args.max_length)
-    tokenized["labels"] = new_labels
-    return tokenized
-
-def process_train_function_2(batch):
     new_texts = []
     new_labels = []
     
@@ -193,7 +169,7 @@ def process_eval_function(batch):
 
 print("[-] Procesando TRAIN (Intervenciones individuales)...")
 train_dataset = raw_dataset['train'].map(
-    process_train_function_2, 
+    process_train_function, 
     batched=True, 
     remove_columns=raw_dataset['train'].column_names
 )
@@ -347,6 +323,29 @@ metrics = evaluator.compute_all_metrics(y_true_test, y_score_test, threshold=bes
 evaluator.print_report(metrics)
 
 # Guardar resultados
-with open(f"{args.output_dir}/test_metrics.json", "w") as f:
+json_path = os.path.join(args.output_dir, "test_metrics.json")
+with open(json_path, "w") as f:
     serializable_metrics = {k: float(v) for k, v in metrics.items()}
     json.dump(serializable_metrics, f, indent=4)
+
+sorted_ids = sorted([int(k) for k in id2label.keys()])
+mp_names_ordered = [id2label[k] for k in sorted_ids]
+
+results_data = {
+    "model_name": full_experiment_name,  # Nombre descriptivo
+    "args": vars(args),                  # Guardamos TODOS los argumentos por si acaso
+    "threshold": best_threshold,         # El umbral óptimo calculado en Dev
+    "metrics": metrics,                  # Diccionario de métricas (F1, MAP, nDCG...)
+    "mp_names": mp_names_ordered,        # Lista de nombres [MP_0, MP_1, ...]
+    "y_true": y_true_test,               # Matriz numpy (N_docs x N_mps)
+    "scores": y_score_test               # Matriz numpy (N_docs x N_mps)
+}
+
+import pickle
+pickle_path = os.path.join(args.output_dir, "full_results.pkl")
+with open(pickle_path, "wb") as f:
+    pickle.dump(results_data, f)
+
+print(f"\n[-] Métricas guardadas en: {json_path}")
+print(f"[-] Objeto completo (Pickle) guardado en: {pickle_path}")
+print(f"    (Nombre del modelo registrado: {full_experiment_name})")
