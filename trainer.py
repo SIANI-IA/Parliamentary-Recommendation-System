@@ -3,16 +3,16 @@ import json
 import torch
 import numpy as np
 import random
+import os
 from datasets import load_from_disk
-from sklearn.metrics import f1_score, precision_score, recall_score
+from sklearn.metrics import f1_score
 from transformers import (
     AutoTokenizer, 
     AutoModelForSequenceClassification, 
     TrainingArguments, 
-    Trainer,
     BitsAndBytesConfig,
     DataCollatorWithPadding,
-    set_seed
+    EarlyStoppingCallback,
 )
 from peft import (
     LoraConfig, 
@@ -21,19 +21,13 @@ from peft import (
     TaskType
 )
 from eval.Evaluator import Evaluator
-from trainers.nnPULoss import nnPULoss
-from utils import SEED
-from utils import estimate_prior
 
-# --- 0. REPRODUCIBILIDAD ---
-def initialize_determinism(seed=42):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    set_seed(seed)
-    #os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-    #torch.use_deterministic_algorithms(True, warn_only=True)
+from torch import nn
+
+from utils import SEED
+from trainers.trainer_utils import initialize_determinism, compute_metrics, get_pos_weight_value, estimate_prior
+from trainers.WeightedTrainer import WeightedTrainer
+from trainers.nnPUTrainer import nnPUTrainer
 
 # --- 1. CONFIGURACIÓN ---
 parser = argparse.ArgumentParser(description="Baseline Dual (Train: Intervenciones / Test: Full Text)")
@@ -43,11 +37,28 @@ parser.add_argument("--model_name", type=str, default="jhu-clsp/mmBERT-small")
 parser.add_argument("--mode", type=str, choices=["full", "lora", "qlora"], default="full")
 parser.add_argument("--output_dir", type=str, default="./results_dual")
 parser.add_argument("--seed", type=int, default=SEED)
+parser.add_argument("--intervention_strategy", type=str, choices=["concat", "split"], default="concat")
+parser.add_argument("--label_strategy", type=str, choices=["author", "all_participants"], default="author")
+
+# type of loss
+parser.add_argument("--loss_type", type=str, choices=["bce", "nnpuloss"], default="bce")
+
+# general hyperparameters
 parser.add_argument("--epochs", type=int, default=3)
 parser.add_argument("--batch_size", type=int, default=8)
 parser.add_argument("--max_length", type=int, default=512)
-parser.add_argument("--intervention_strategy", type=str, choices=["concat", "split"], default="concat")
-parser.add_argument("--label_strategy", type=str, choices=["author", "all_participants"], default="author")
+parser.add_argument("--pos_weight_type", type=str, choices=["linear", "sqrt", "log"], default="sqrt", help="Type of pos_weight to use")
+parser.add_argument("--learning_rate", type=float, default=None, help="Learning rate to use (overrides defaults)")
+parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay to use")
+parser.add_argument("--early_stopping_patience", type=int, default=5, help="Patience for early stopping")
+
+# lora/qlora specific
+parser.add_argument("--lora_r", type=int, default=16, help="Lora rank")
+parser.add_argument("--lora_alpha", type=int, default=32, help="Lora alpha")
+parser.add_argument("--lora_dropout", type=float, default=0.1, help="Lora dropout")
+
+# hyperparameters for nnPU loss
+parser.add_argument("--nnpu_priors", type=float, default=0.05, help="Estimated prior probability of positive class")
 
 args = parser.parse_args()
 initialize_determinism(args.seed)
@@ -160,27 +171,6 @@ def process_train_function_2(batch):
     tokenized["labels"] = new_labels
     return tokenized
 # B) FUNCIÓN PARA DEV/TEST (Full Text: 1 Doc -> N MPs)
-# --- BLOQUE NUEVO: MÉTRICAS PARA EL TRAINING LOOP ---
-
-def compute_metrics(p):
-    predictions, labels = p
-    # Convertimos logits a probabilidades
-    probs = 1 / (1 + np.exp(-predictions))
-    
-    # Usamos un umbral estándar de 0.5 para monitorear durante el entrenamiento
-    # (El umbral óptimo se calculará al final, esto es solo para ver progreso)
-    y_pred = (probs > 0.5).astype(int)
-    
-    # Calculamos F1 Micro (la métrica más importante para ver convergencia global)
-    f1 = f1_score(labels, y_pred, average='micro', zero_division=0)
-    precision = precision_score(labels, y_pred, average='micro', zero_division=0)
-    recall = recall_score(labels, y_pred, average='micro', zero_division=0)
-    
-    return {
-        'f1_micro': f1,
-        'precision': precision, 
-        'recall': recall
-    }
 
 def process_eval_function(batch):
     # Aquí usamos directamente 'Text' y 'Speakers' del batch original
@@ -253,38 +243,22 @@ else:
 if args.mode in ["lora", "qlora"]:
     peft_config = LoraConfig(
         task_type=TaskType.SEQ_CLS, 
-        r=16, 
-        lora_alpha=32, 
-        lora_dropout=0.1, 
-        target_modules=["query", "value"]
+        r=args.lora_r, 
+        lora_alpha=args.lora_alpha, 
+        lora_dropout=args.lora_dropout, 
+        target_modules=["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"]
     )
     model = get_peft_model(model, peft_config)
 
 # --- 5. ENTRENAMIENTO ---
 
-class nnPUTrainer(Trainer):
-    def __init__(self, *args, prior=0.01, gamma=1.0, beta=0.0, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Instanciamos nuestra loss personalizada
-        self.loss_fct = nnPULoss(prior=prior, gamma=gamma, beta=beta)
-        
-    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        labels = inputs.get("labels")
-        outputs = model(**inputs)
-        logits = outputs.get("logits")
-        
-        # Aseguramos que labels y logits estén alineados
-        loss = self.loss_fct(logits, labels)
-        
-        return (loss, outputs) if return_outputs else loss
-
 training_args = TrainingArguments(
     output_dir=args.output_dir,
-    learning_rate=2e-4 if args.mode != "full" else 2e-5,
+    learning_rate=args.learning_rate,
     per_device_train_batch_size=args.batch_size,
     per_device_eval_batch_size=args.batch_size, # Ahora podemos usar batch mayor en eval si queremos
     num_train_epochs=args.epochs,
-    weight_decay=0.01,
+    weight_decay=args.weight_decay,
     eval_strategy="epoch", 
     save_strategy="epoch",
     load_best_model_at_end=True,  # Al final, cargar el mejor modelo según F1
@@ -297,21 +271,41 @@ training_args = TrainingArguments(
     logging_steps=100,
     report_to="none"
 )
-estimated_pi = 0.05 #estimate_prior(train_dataset)
-trainer = nnPUTrainer(
-    model=model,
-    args=training_args,
-    train_dataset=train_dataset,
-    processing_class=tokenizer,
-    eval_dataset=dev_dataset,
-    data_collator=DataCollatorWithPadding(tokenizer=tokenizer),
-    compute_metrics=compute_metrics,
-    prior=estimated_pi,
-    gamma=1.0,          # Penalización estándar
-    beta=0.0            # Umbral estándar
+
+early_stopping_callback = EarlyStoppingCallback(
+    early_stopping_patience=args.early_stopping_patience,
 )
 
-print(f"[-] Entrenando con nnPU Loss (Prior={estimated_pi:.5f})...")
+if args.loss_type == "bce":
+    pos_weight_value = get_pos_weight_value(args.pos_weight_type, num_labels)
+    trainer = WeightedTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        processing_class=tokenizer,
+        eval_dataset=dev_dataset,
+        data_collator=DataCollatorWithPadding(tokenizer=tokenizer),
+        compute_metrics=compute_metrics,
+        pos_weight_value=pos_weight_value,
+        early_stopping_callback=early_stopping_callback
+    )
+elif args.loss_type == "nnpuloss":
+    estimated_pi = args.nnpu_priors if args.nnpu_priors else estimate_prior(train_dataset)
+    trainer = nnPUTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        processing_class=tokenizer,
+        eval_dataset=dev_dataset,
+        data_collator=DataCollatorWithPadding(tokenizer=tokenizer),
+        compute_metrics=compute_metrics,
+        prior=estimated_pi,
+        early_stopping_callback=early_stopping_callback,
+        gamma=1.0,          # Penalización estándar
+        beta=0.0            # Umbral estándar
+    )
+
+print("[-] Entrenando...")
 trainer.train()
 trainer.save_model(f"{args.output_dir}/final_model")
 
