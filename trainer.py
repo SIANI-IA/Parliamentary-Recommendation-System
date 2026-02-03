@@ -35,7 +35,7 @@ parser.add_argument("--data_path", type=str, required=True)
 parser.add_argument("--mapping_path", type=str, required=True)
 parser.add_argument("--model_name", type=str, default="jhu-clsp/mmBERT-small")
 parser.add_argument("--mode", type=str, choices=["full", "lora", "qlora"], default="full")
-parser.add_argument("--output_dir", type=str, default="./results_dual")
+parser.add_argument("--output_dir", type=str, default="./results")
 parser.add_argument("--seed", type=int, default=SEED)
 parser.add_argument("--intervention_strategy", type=str, choices=["concat", "split"], default="split")
 parser.add_argument("--label_strategy", type=str, choices=["author", "all_participants"], default="all_participants")
@@ -48,7 +48,7 @@ parser.add_argument("--epochs", type=int, default=3)
 parser.add_argument("--batch_size", type=int, default=8)
 parser.add_argument("--max_length", type=int, default=512)
 parser.add_argument("--pos_weight_type", type=str, choices=["linear", "sqrt", "log"], default="sqrt", help="Type of pos_weight to use")
-parser.add_argument("--learning_rate", type=float, default=None, help="Learning rate to use (overrides defaults)")
+parser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate to use (overrides defaults)")
 parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay to use")
 parser.add_argument("--early_stopping_patience", type=int, default=5, help="Patience for early stopping")
 
@@ -63,7 +63,8 @@ parser.add_argument("--nnpu_priors", type=float, default=0.05, help="Estimated p
 args = parser.parse_args()
 initialize_determinism(args.seed)
 
-model_name_base = os.path.basename(args.model_name.replace("/", "_"))
+model_name_base = os.path.basename(args.model_name)
+dataset_base = os.path.basename(args.data_path)
 
 if args.loss_type == "bce":
     trainer_name = f"BCETrainer_{args.pos_weight_type}"
@@ -76,8 +77,9 @@ full_experiment_name = (
     f"epochs{args.epochs}_"
     f"bs{args.batch_size}_"
     f"lr{args.learning_rate}_"
-    f"maxlen{args.max_length}_"
+    f"maxlen{args.max_length}"
 )
+folder_to_save_results = os.path.join(args.output_dir, dataset_base, full_experiment_name)
 
 # --- 2. CARGA DE DATOS ---
 print(f"[-] Cargando mapeo...")
@@ -225,12 +227,15 @@ if args.mode in ["lora", "qlora"]:
         target_modules=["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"]
     )
     model = get_peft_model(model, peft_config)
-
+    # imprime la cantidad de parametros entrenables
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"[-] Parámetros totales: {total_params}, Entrenables: {trainable_params} ({100 * trainable_params / total_params:.2f}%)")
 # --- 5. ENTRENAMIENTO ---
 
 training_args = TrainingArguments(
-    output_dir=args.output_dir,
-    learning_rate=args.learning_rate,
+    output_dir=folder_to_save_results,
+    learning_rate=args.learning_rate if args.learning_rate else (2e-4 if args.mode != "full" else 2e-5),
     per_device_train_batch_size=args.batch_size,
     per_device_eval_batch_size=args.batch_size, # Ahora podemos usar batch mayor en eval si queremos
     num_train_epochs=args.epochs,
@@ -263,7 +268,7 @@ if args.loss_type == "bce":
         data_collator=DataCollatorWithPadding(tokenizer=tokenizer),
         compute_metrics=compute_metrics,
         pos_weight_value=pos_weight_value,
-        early_stopping_callback=early_stopping_callback
+        callbacks=[early_stopping_callback]
     )
 elif args.loss_type == "nnpuloss":
     estimated_pi = args.nnpu_priors if args.nnpu_priors else estimate_prior(train_dataset)
@@ -276,14 +281,14 @@ elif args.loss_type == "nnpuloss":
         data_collator=DataCollatorWithPadding(tokenizer=tokenizer),
         compute_metrics=compute_metrics,
         prior=estimated_pi,
-        early_stopping_callback=early_stopping_callback,
+        callbacks=[early_stopping_callback],
         gamma=1.0,          # Penalización estándar
         beta=0.0            # Umbral estándar
     )
 
 print("[-] Entrenando...")
 trainer.train()
-trainer.save_model(f"{args.output_dir}/final_model")
+trainer.save_model(f"{folder_to_save_results}/final_model")
 
 # --- 6. OPTIMIZACIÓN DE UMBRAL (DEV) ---
 print("\n[-] Prediciendo en DEV (Full Text)...")
@@ -323,7 +328,7 @@ metrics = evaluator.compute_all_metrics(y_true_test, y_score_test, threshold=bes
 evaluator.print_report(metrics)
 
 # Guardar resultados
-json_path = os.path.join(args.output_dir, "test_metrics.json")
+json_path = os.path.join(folder_to_save_results, "test_metrics.json")
 with open(json_path, "w") as f:
     serializable_metrics = {k: float(v) for k, v in metrics.items()}
     json.dump(serializable_metrics, f, indent=4)
@@ -342,7 +347,7 @@ results_data = {
 }
 
 import pickle
-pickle_path = os.path.join(args.output_dir, "full_results.pkl")
+pickle_path = os.path.join(folder_to_save_results, "full_results.pkl")
 with open(pickle_path, "wb") as f:
     pickle.dump(results_data, f)
 
