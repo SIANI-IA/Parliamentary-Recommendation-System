@@ -58,9 +58,6 @@ parser.add_argument("--lora_r", type=int, default=16, help="Lora rank")
 parser.add_argument("--lora_alpha", type=int, default=32, help="Lora alpha")
 parser.add_argument("--lora_dropout", type=float, default=0.1, help="Lora dropout")
 
-# hyperparameters for nnPU loss
-parser.add_argument("--nnpu_priors", type=float, default=0.05, help="Estimated prior probability of positive class")
-
 args = parser.parse_args()
 initialize_determinism(args.seed)
 
@@ -70,7 +67,7 @@ dataset_base = os.path.basename(args.data_path)
 if args.loss_type == "bce":
     trainer_name = f"BCETrainer_{args.pos_weight_type}"
 else:
-    trainer_name = f"nnPUTrainer_{args.nnpu_priors}"
+    trainer_name = f"nnPUTrainer"
 
 full_experiment_name = (
     f"{model_name_base}_{args.mode}_"
@@ -275,7 +272,8 @@ if args.loss_type == "bce":
         callbacks=[early_stopping_callback]
     )
 elif args.loss_type == "nnpuloss":
-    estimated_pi = args.nnpu_priors if args.nnpu_priors else estimate_prior(train_dataset)
+    estimated_pi = estimate_prior(raw_dataset[split_to_use])
+    print(f"    Usando prior estimado pi = {estimated_pi:.5f} para nnPU Loss.")
     trainer = nnPUTrainer(
         model=model,
         args=training_args,

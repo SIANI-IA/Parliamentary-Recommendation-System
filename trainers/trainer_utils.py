@@ -39,13 +39,13 @@ def estimate_prior(dataset):
     total_elements = 0
     
     # Iteramos sobre una muestra del dataset procesado (o todo si es rápido)
-    for i in range(len(dataset)):
+    for i in range(min(1000, len(dataset))):
         labels = np.array(dataset[i]['label'])
         total_ones += labels.sum().item()
         total_elements += len(labels)
     
     real_prior = total_ones / total_elements
-    return real_prior * 1.05
+    return real_prior * 1.1
 
 def get_pos_weight_value(type: str, num_labels: int) -> float:
     if type == 'linear':
