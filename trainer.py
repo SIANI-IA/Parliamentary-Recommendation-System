@@ -39,6 +39,7 @@ parser.add_argument("--output_dir", type=str, default="./results")
 parser.add_argument("--seed", type=int, default=SEED)
 parser.add_argument("--intervention_strategy", type=str, choices=["concat", "split"], default="split")
 parser.add_argument("--label_strategy", type=str, choices=["author", "all_participants"], default="all_participants")
+parser.add_argument("--tiny", action="store_true", help="Usar un subset tiny para pruebas rápidas")
 
 # type of loss
 parser.add_argument("--loss_type", type=str, choices=["bce", "nnpuloss"], default="bce")
@@ -50,7 +51,7 @@ parser.add_argument("--max_length", type=int, default=512)
 parser.add_argument("--pos_weight_type", type=str, choices=["linear", "sqrt", "log"], default="sqrt", help="Type of pos_weight to use")
 parser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate to use (overrides defaults)")
 parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay to use")
-parser.add_argument("--early_stopping_patience", type=int, default=5, help="Patience for early stopping")
+parser.add_argument("--early_stopping_patience", type=int, default=3, help="Patience for early stopping")
 
 # lora/qlora specific
 parser.add_argument("--lora_r", type=int, default=16, help="Lora rank")
@@ -170,10 +171,11 @@ def process_eval_function(batch):
     return tokenized
 
 print("[-] Procesando TRAIN (Intervenciones individuales)...")
-train_dataset = raw_dataset['train'].map(
+split_to_use = 'train' if not args.tiny else 'tiny'
+train_dataset = raw_dataset[split_to_use].map(
     process_train_function, 
     batched=True, 
-    remove_columns=raw_dataset['train'].column_names
+    remove_columns=raw_dataset[split_to_use].column_names
 )
 train_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
 
@@ -240,6 +242,8 @@ training_args = TrainingArguments(
     per_device_eval_batch_size=args.batch_size, # Ahora podemos usar batch mayor en eval si queremos
     num_train_epochs=args.epochs,
     weight_decay=args.weight_decay,
+    gradient_accumulation_steps=4,
+    warmup_ratio=0.1,
     eval_strategy="epoch", 
     save_strategy="epoch",
     load_best_model_at_end=True,  # Al final, cargar el mejor modelo según F1
