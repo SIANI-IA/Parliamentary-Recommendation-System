@@ -24,6 +24,7 @@ from eval.Evaluator import Evaluator
 
 from torch import nn
 
+from trainers.StarSpaceTrainer import StarSpaceTrainer
 from utils import SEED
 from trainers.trainer_utils import initialize_determinism, compute_metrics, get_pos_weight_value, estimate_prior
 from trainers.WeightedTrainer import WeightedTrainer
@@ -42,7 +43,8 @@ parser.add_argument("--label_strategy", type=str, choices=["author", "all_partic
 parser.add_argument("--tiny", action="store_true", help="Usar un subset tiny para pruebas rápidas")
 
 # type of loss
-parser.add_argument("--loss_type", type=str, choices=["bce", "nnpuloss"], default="bce")
+parser.add_argument("--loss_type", type=str, choices=["bce", "nnpuloss", "starspace"], default="starspace")
+parser.add_argument("--num_negatives", type=int, default=5, help="Number of negative samples for StarSpace loss")
 
 # general hyperparameters
 parser.add_argument("--epochs", type=int, default=3)
@@ -66,6 +68,8 @@ dataset_base = os.path.basename(args.data_path)
 
 if args.loss_type == "bce":
     trainer_name = f"BCETrainer_{args.pos_weight_type}"
+elif args.loss_type == "starspace":
+    trainer_name = f"StarSpaceTrainer_k{args.num_negatives}"
 else:
     trainer_name = f"nnPUTrainer"
 
@@ -287,6 +291,20 @@ elif args.loss_type == "nnpuloss":
         gamma=1.0,          # Penalización estándar
         beta=0.0            # Umbral estándar
     )
+elif args.loss_type == "starspace":
+    trainer = StarSpaceTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        processing_class=tokenizer,
+        eval_dataset=dev_dataset,
+        data_collator=DataCollatorWithPadding(tokenizer=tokenizer),
+        compute_metrics=compute_metrics,
+        num_negatives=args.num_negatives,
+        callbacks=[early_stopping_callback]
+    )
+else:
+    raise ValueError(f"Tipo de loss desconocido: {args.loss_type}")
 
 print("[-] Entrenando...")
 trainer.train()
