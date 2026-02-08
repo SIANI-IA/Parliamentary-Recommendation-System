@@ -5,7 +5,7 @@ import numpy as np
 import random
 import os
 from datasets import load_from_disk
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, precision_score, recall_score
 from transformers import (
     AutoTokenizer, 
     AutoModelForSequenceClassification, 
@@ -43,7 +43,7 @@ parser.add_argument("--label_strategy", type=str, choices=["author", "all_partic
 parser.add_argument("--tiny", action="store_true", help="Usar un subset tiny para pruebas rápidas")
 
 # type of loss
-parser.add_argument("--loss_type", type=str, choices=["bce", "nnpuloss", "starspace"], default="starspace")
+parser.add_argument("--loss_type", type=str, choices=["bce", "nnpuloss", "starspace"], default="bce")
 parser.add_argument("--num_negatives", type=int, default=5, help="Number of negative samples for StarSpace loss")
 
 # general hyperparameters
@@ -292,6 +292,35 @@ elif args.loss_type == "nnpuloss":
         beta=0.0            # Umbral estándar
     )
 elif args.loss_type == "starspace":
+    def compute_metrics_scaled(p):
+        predictions, labels = p
+        
+        # --- FIX CRÍTICO: ESCALADO ---
+        # Recuperamos la dimensión del modelo desde el scope global o hardcodeado
+        # (Qwen suele ser 1024 o 896 dependiendo de la versión, mejor leerlo de config)
+        hidden_dim = model.config.hidden_size 
+        scale_factor = np.sqrt(hidden_dim)
+        
+        # Dividimos los logits gigantes antes de la sigmoide
+        predictions = predictions / scale_factor
+        # -----------------------------
+
+        # Convertimos logits a probabilidades
+        probs = 1 / (1 + np.exp(-predictions))
+        
+        # Usamos un umbral estándar de 0.5 para monitorear
+        y_pred = (probs > 0.5).astype(int)
+        
+        # Calculamos métricas
+        f1 = f1_score(labels, y_pred, average='micro', zero_division=0)
+        precision = precision_score(labels, y_pred, average='micro', zero_division=0)
+        recall = recall_score(labels, y_pred, average='micro', zero_division=0)
+        
+        return {
+            'f1_micro': f1,
+            'precision': precision, 
+            'recall': recall
+        }
     trainer = StarSpaceTrainer(
         model=model,
         args=training_args,
@@ -299,7 +328,7 @@ elif args.loss_type == "starspace":
         processing_class=tokenizer,
         eval_dataset=dev_dataset,
         data_collator=DataCollatorWithPadding(tokenizer=tokenizer),
-        compute_metrics=compute_metrics,
+        compute_metrics=compute_metrics_scaled,
         num_negatives=args.num_negatives,
         callbacks=[early_stopping_callback]
     )
@@ -314,7 +343,11 @@ trainer.save_model(f"{folder_to_save_results}/final_model")
 print("\n[-] Prediciendo en DEV (Full Text)...")
 # Al ser clasificación estándar (1 fila = 1 doc), trainer.predict funciona directo
 dev_predictions = trainer.predict(dev_dataset)
-dev_logits = dev_predictions.predictions
+if args.loss_type == "starspace":
+    hidden_size = model.config.hidden_size
+    dev_logits = dev_predictions.predictions / (hidden_size ** 0.5)
+else:
+    dev_logits = dev_predictions.predictions
 dev_labels = dev_predictions.label_ids
 
 # Sigmoide
@@ -339,7 +372,12 @@ print(f"    Mejor umbral: {best_threshold:.2f} (F1 Dev: {best_f1:.4f})")
 # --- 7. EVALUACIÓN FINAL (TEST) ---
 print(f"\n[-] Evaluando en TEST (Full Text) con umbral {best_threshold:.2f}...")
 test_predictions = trainer.predict(test_dataset)
-y_score_test = 1 / (1 + np.exp(-test_predictions.predictions))
+if args.loss_type == "starspace":
+    hidden_size = model.config.hidden_size
+    y_score_test = test_predictions.predictions / (hidden_size ** 0.5)
+else:
+    y_score_test = test_predictions.predictions
+y_score_test = 1 / (1 + np.exp(-y_score_test))  # Sigmoide
 y_true_test = test_predictions.label_ids
 
 # Llamada a tu Evaluator

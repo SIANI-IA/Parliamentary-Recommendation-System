@@ -16,7 +16,8 @@ class StarSpaceTrainer(Trainer):
         """
         labels = inputs.pop("labels")
         outputs = model(**inputs)
-        logits = outputs.logits  # (Batch, Num_Labels) -> Similitud (Dot Product)
+        hidden_size = model.config.hidden_size
+        logits = outputs.logits / (hidden_size ** 0.5)  # (Batch, Num_Labels) -> Similitud (Dot Product)
         
         total_loss = 0
         valid_samples = 0
