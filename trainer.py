@@ -41,6 +41,7 @@ parser.add_argument("--seed", type=int, default=SEED)
 parser.add_argument("--intervention_strategy", type=str, choices=["concat", "split"], default="split")
 parser.add_argument("--label_strategy", type=str, choices=["author", "all_participants"], default="all_participants")
 parser.add_argument("--tiny", action="store_true", help="Usar un subset tiny para pruebas rápidas")
+parser.add_argument("--dapt_adapter_path", type=str, default=None, help="Ruta a un adaptador LoRA entrenado en DAPT (opcional)")
 
 # type of loss
 parser.add_argument("--loss_type", type=str, choices=["bce", "nnpuloss", "starspace"], default="bce")
@@ -220,6 +221,15 @@ if args.mode == "qlora":
     model = prepare_model_for_kbit_training(model)
 else:
     model = AutoModelForSequenceClassification.from_pretrained(args.model_name, device_map="auto", **model_config)
+
+if args.dapt_adapter_path:
+    from peft import PeftModel
+    print(f"[-] Cargando adaptador DAPT desde {args.dapt_adapter_path}...")
+    model = PeftModel.from_pretrained(model, args.dapt_adapter_path)
+    print("[-] Fusionando adaptador DAPT en el modelo base...")
+    model = model.merge_and_unload()
+    folder_to_save_results += folder_to_save_results + "_dapt"
+
 
 if args.mode in ["lora", "qlora"]:
     peft_config = LoraConfig(

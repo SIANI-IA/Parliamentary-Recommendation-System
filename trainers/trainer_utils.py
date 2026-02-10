@@ -10,8 +10,6 @@ def initialize_determinism(seed=42):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     set_seed(seed)
-    #os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-    #torch.use_deterministic_algorithms(True, warn_only=True)
 
 def compute_metrics(p):
     predictions, labels = p
