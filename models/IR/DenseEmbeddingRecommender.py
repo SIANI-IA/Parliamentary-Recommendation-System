@@ -17,22 +17,26 @@ class DenseEmbeddingRecommender(Recommender):
             model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2", 
             batch_size: int = 64,
             token_limit: int = 512,
-            use_intervention_level: bool = False  # <--- NUEVO FLAG
+            use_intervention_level: bool = False,  # <--- NUEVO FLAG
+            use_half_precision: bool = False, # <--- NUEVO FLAG (si quieres usar half precision en CUDA)
         ):
         super().__init__(dataset_path)
         self.batch_size = batch_size
         self.token_limit = token_limit
         self.use_intervention_level = use_intervention_level # True: Max Score (ir-i), False: Centroid (ir-p)
         self.model_name = os.path.basename(model_name)
+        self.use_half_precision = use_half_precision
         
         # Configuración del dispositivo (CUDA si es posible)
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         print(f"--- Cargando modelo Dense en: {self.device.upper()} ---")
-        print(f"--- Estrategia: {'INTERVENTION-LEVEL (Max Score)' if use_intervention_level else 'PROFILE-LEVEL (Centroid)'} ---")
+        print(f"--- Estrategia: {'INTERVENTION-LEVEL (Max Score)' if self.use_intervention_level else 'PROFILE-LEVEL (Centroid)'} ---")
         
         # Cargamos el modelo SBERT
         self.model = SentenceTransformer(model_name, device=self.device, trust_remote_code=True)
         self.model.max_seq_length = self.token_limit
+        if self.use_half_precision and self.device == 'cuda':
+            self.model.half() # Si estás en CUDA, esto reduce el uso de memoria y puede acelerar la inferencia sin perder mucha precisión en tareas de similitud.
         
         self.profiles_matrix = None 
         # Si es Centroid: (N_MPs, Dim)
@@ -132,8 +136,12 @@ class DenseEmbeddingRecommender(Recommender):
         # scores_raw será (N_Queries, N_Rows_in_Profile)
         # Convertimos profiles_matrix a Tensor para usar util.cos_sim (optimizado en GPU)
         profiles_tensor = torch.tensor(self.profiles_matrix, device=self.device)
+        if self.use_half_precision and self.device == 'cuda':
+            query_embeddings = query_embeddings.astype(np.float16)
         queries_tensor = torch.tensor(query_embeddings, device=self.device) # Asegurar que es tensor
         
+        if self.use_half_precision and self.device == 'cuda':
+            profiles_tensor = profiles_tensor.half() # Convertir a half precision si es necesario
         raw_scores = util.cos_sim(queries_tensor, profiles_tensor)
         
         if not self.use_intervention_level:
