@@ -19,6 +19,7 @@ class DenseEmbeddingRecommender(Recommender):
             token_limit: int = 512,
             use_intervention_level: bool = False,  # <--- NUEVO FLAG
             use_half_precision: bool = False, # <--- NUEVO FLAG (si quieres usar half precision en CUDA)
+            use_4bits: bool = False, # <--- NUEVO FLAG (si quieres usar cuantización en 4 bits)
         ):
         super().__init__(dataset_path)
         self.batch_size = batch_size
@@ -26,14 +27,29 @@ class DenseEmbeddingRecommender(Recommender):
         self.use_intervention_level = use_intervention_level # True: Max Score (ir-i), False: Centroid (ir-p)
         self.model_name = os.path.basename(model_name)
         self.use_half_precision = use_half_precision
-        
+        self.use_4bits = use_4bits
         # Configuración del dispositivo (CUDA si es posible)
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         print(f"--- Cargando modelo Dense en: {self.device.upper()} ---")
         print(f"--- Estrategia: {'INTERVENTION-LEVEL (Max Score)' if self.use_intervention_level else 'PROFILE-LEVEL (Centroid)'} ---")
         
         # Cargamos el modelo SBERT
-        self.model = SentenceTransformer(model_name, device=self.device, trust_remote_code=True)
+        if self.use_4bits and self.device == 'cuda':
+            quantization_config = {
+                "load_in_4bit": True,
+                "bnb_4bit_compute_dtype": torch.float16,
+                "bnb_4bit_quant_type": "nf4",
+                "bnb_4bit_use_double_quant": True
+            }
+            self.model = SentenceTransformer(
+                model_name,
+                device=self.device,
+                model_kwargs=quantization_config,
+                trust_remote_code=True
+            )
+        else:
+            self.model = SentenceTransformer(model_name, device=self.device, trust_remote_code=True)
+
         self.model.max_seq_length = self.token_limit
         if self.use_half_precision and self.device == 'cuda':
             self.model.half() # Si estás en CUDA, esto reduce el uso de memoria y puede acelerar la inferencia sin perder mucha precisión en tareas de similitud.
