@@ -10,20 +10,21 @@ import torch
 
 from utils import SEED
 
-FOLDER_KNOWLEDGE = "data/processed/squad_knowledge_european_union_law"
-FOLDER_QA = "data/processed/squad_qa_european_union_law"
-MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
+dataset_name = "parcanDeb-rec-split" # Ajusta esto a tu dataset
+FOLDER_KNOWLEDGE = f"dataset/autoregressive_split/{dataset_name}"
+FOLDER_QA = f"dataset/instruction_split/{dataset_name}"
+MODEL_NAME = "Qwen/Qwen3-0.6B"
 is_sync = True
 is_adapter = False # TODO: solucionar esto no funciona
-TINY = False
+TINY = False # Para pruebas rápidas, setea a False para entrenar con todo el dataset.
 BATCH_SIZE = 2
 MAX_LENGTH = 2048
 LOAD_IN_4BIT = False
 SUPER_EPOCHS = 10
-RANK_LORA = 128
+RANK_LORA = 16
 model_basename = MODEL_NAME.split("/")[-1]
 USE_WANDB = True
-FOLDER_TO_SAVE_MODELS = "./models/"
+FOLDER_TO_SAVE_MODELS = "./results/testing"
 name_dataset = FOLDER_QA.split("/")[-1]
 name_of_folder_model = os.path.join(FOLDER_TO_SAVE_MODELS, f"{model_basename}-r{RANK_LORA}-ccf-{name_dataset}")
 
@@ -44,7 +45,7 @@ def get_model():
             r = RANK_LORA,
             target_modules = [
                 "q_proj", "k_proj", "v_proj", "o_proj","gate_proj", "up_proj", "down_proj", 
-                # "lm_head", "embed_tokens"
+                #"lm_head", "embed_tokens"
             ],
             lora_alpha = RANK_LORA*2,
             lora_dropout = 0, 
@@ -78,7 +79,7 @@ def generate_qa_prompts(dataset, tokenizer):
     prompts = []
     for item in dataset:
         system_prompt = item["system_prompt"]
-        prompt = item["document"] 
+        prompt = item["document"][0:2000] # TODO: ajustar esto para que no corte información relevante, quizás usando el tokenizador para truncar por tokens en lugar de por caracteres.
         response = item["answer"]
         prompts.append(build_prompt_it(tokenizer, system_prompt, prompt, response))
     return prompts
@@ -101,7 +102,7 @@ def generate_qa_prompts_for_testing(dataset, tokenizer):
     prompts = []
     for item in dataset:
         system_prompt = item["system_prompt"]
-        prompt = item["document"] 
+        prompt = item["document"][0:2000]
         prompts.append(build_prompt_testing(tokenizer, system_prompt, prompt))
     return prompts
 
@@ -113,9 +114,10 @@ def main():
     
     if TINY:
         print("Using tiny dataset for testing...")
-        knowledge_dataset = knowledge_dataset.select(range(128))
+        knowledge_dataset["train"] = knowledge_dataset["train"].select(range(128))
+        knowledge_dataset["dev"] = knowledge_dataset["dev"].select(range(64))
         qa_dataset["train"] = qa_dataset["train"].select(range(128))
-        qa_dataset["validation"] = qa_dataset["validation"].select(range(64))
+        qa_dataset["dev"] = qa_dataset["dev"].select(range(64))
 
     model, tokenizer = get_model()
 
@@ -132,7 +134,7 @@ def main():
     
     # datasets
     qa_dataset_train_text = generate_qa_prompts(qa_dataset["train"], tokenizer)
-    qa_dataset_validation_text = generate_qa_prompts(qa_dataset["validation"], tokenizer)
+    qa_dataset_validation_text = generate_qa_prompts(qa_dataset["dev"], tokenizer)
     qa_dataset_test_text = generate_qa_prompts_for_testing(qa_dataset["test"], tokenizer)
 
     def tokenize_function(examples):
@@ -142,15 +144,10 @@ def main():
     qa_val_dataset = Dataset.from_dict({"text": qa_dataset_validation_text})
     qa_test_dataset = Dataset.from_dict({"text": qa_dataset_test_text})
 
-    qa_dataset = {
-        "train": qa_train_dataset,
-        "validation": qa_val_dataset,
-        "test": qa_test_dataset,
-    }
     knowledge_dataset_tokenizer = knowledge_dataset.map(tokenize_function, batched=True)
-    qa_train_dataset_tokenizer = qa_dataset["train"].map(tokenize_function, batched=True)
-    qa_val_dataset_tokenizer = qa_dataset["validation"].map(tokenize_function, batched=True)
-    qa_test_dataset_tokenizer = qa_dataset["test"].map(tokenize_function, batched=True)
+    qa_train_dataset_tokenizer = qa_train_dataset.map(tokenize_function, batched=True)
+    qa_val_dataset_tokenizer = qa_val_dataset.map(tokenize_function, batched=True)
+    qa_test_dataset_tokenizer = qa_test_dataset.map(tokenize_function, batched=True)
     
     # training
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
@@ -171,7 +168,7 @@ def main():
         lr_scheduler_type = "cosine",
         seed = SEED,
         report_to = "none", # Use this for WandB etc
-        output_dir="./models/dummy",
+        output_dir="./testing/dummy",
     )
 
     it_config = SFTConfig(
@@ -193,7 +190,7 @@ def main():
         lr_scheduler_type="cosine",
         seed=SEED,
         report_to="none",
-        output_dir="./models/dummy",
+        output_dir="./testing/dummy",
         load_best_model_at_end=False,          # <-- opcional
         metric_for_best_model="eval_loss",    # <-- opcional
         greater_is_better=False,              # <-- opcional
@@ -224,7 +221,7 @@ def main():
         import wandb
         import json
         wandb.init(
-            project="Knowledge-acquisition-squad", 
+            project=f"llm-recomendation-agent-{dataset_name}", 
             name=f"ccf-{model_basename}-r{RANK_LORA}",
             config={
                 "model_name": MODEL_NAME,
@@ -264,6 +261,19 @@ def main():
             with open(os.path.join(folder_to_save, "wandb-metadata.json"), "w") as f:
                 json.dump(wandb_info, f)
             print(f"WandB info saved")
+
+        # Evaluación final en el test set, usar el primero ejemplo del test set para generar una respuesta y compararla con la respuesta real.
+        print("Evaluating on test set...")
+        test_prompt = qa_dataset_test_text[0]
+        test_response = qa_dataset["test"][0]["answer"]
+        model.eval()
+        with torch.no_grad():
+            inputs = tokenizer(test_prompt, return_tensors="pt").to(model.device)
+            outputs = model.generate(**inputs, max_length=MAX_LENGTH)
+            generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            #print(f"Test prompt: {test_prompt}")
+            print(f"Generated response: {generated_text}")
+            print(f"Expected response: {test_response}")
 
 
 

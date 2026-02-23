@@ -107,8 +107,6 @@ class ParliamentaryDataBuilder:
             # Si quieres hacerlo por palabras/caracteres antes del tokenizador
             # text_truncated = " ".join(text.split()[:800]) 
             
-            # 3. Construir el prompt completo estilo Chat/Instruct
-            # (Puedes adaptar esto si usas el formato ChatML de Llama-3 o Qwen3)
             system_prompt.append(self.system_prompt)
             document.append(text)
             answer.append(target_string)
@@ -138,26 +136,30 @@ class ParliamentaryDataBuilder:
 # ==========================================
 if __name__ == "__main__":
     from datasets import load_from_disk
+    import os
     # Supongamos que tu dataset se llama 'dataset_dict_original'
     dataset_name = "parcanDeb-rec-split" # Ajusta esto a tu dataset
     dataset_path = f"./dataset/{dataset_name}"
     dataset_dict_original = load_from_disk(dataset_path) # Ajusta el path a tu dataset
     mapping_json_path = f"{dataset_path}/mp_mapping.json" # Ajusta el path a tu JSON
+
+    path_to_save_ar = os.path.join("./dataset/autoregressive_split", dataset_name)
+    path_to_save_instruct = os.path.join("./dataset/instruction_split", dataset_name)
     
     # 1. Instanciar el builder
     builder = ParliamentaryDataBuilder(dataset_dict_original, mapping_json_path, lang='spanish') # Cambia a 'spanish' si tu dataset está en español
     
     # 2. Generar y guardar el dataset Autoregresivo (Fase 1)
     ar_dataset = builder.build_autoregressive_dataset()
-    #ar_dataset.save_to_disk("./data/autoregressive_split")
+    ar_dataset.save_to_disk(path_to_save_ar)
     print(f"Autoregresivo Train filas: {len(ar_dataset['train'])}") # Ej: ~54,000 intervenciones
     # ver ejemplo de una fila
-    print(ar_dataset['train'][1]['text'])
+    #print(ar_dataset['train'][1]['text'])
     
     # 3. Generar y guardar el dataset de Instrucción (Fase 2)
     instruct_dataset = builder.build_instruction_dataset()
     print(f"Instructivo Train filas: {len(instruct_dataset['train'])}") # Ej: 7,640 documentos
-    print(instruct_dataset['train']) # Ver ejemplo de prompt
+    #print(instruct_dataset['train']) # Ver ejemplo de prompt
 
 
-    #instruct_dataset.save_to_disk("./data/instruction_split")
+    instruct_dataset.save_to_disk(path_to_save_instruct)
