@@ -18,9 +18,9 @@ is_sync = True
 is_adapter = False # TODO: solucionar esto no funciona
 TINY = False # Para pruebas rápidas, setea a False para entrenar con todo el dataset.
 BATCH_SIZE = 2
-MAX_LENGTH = 2048
+MAX_LENGTH = 1024
 LOAD_IN_4BIT = False
-SUPER_EPOCHS = 10
+SUPER_EPOCHS = 5
 RANK_LORA = 16
 model_basename = MODEL_NAME.split("/")[-1]
 USE_WANDB = True
@@ -160,7 +160,7 @@ def main():
         warmup_steps = 5,
         num_train_epochs = 1, # Set this for 1 full training run.
         #max_steps = 60,
-        learning_rate = 1e-4, # Reduce to 2e-5 for long training runs
+        learning_rate = 2e-4, # Reduce to 2e-5 for long training runs
         logging_steps = 1,
         # 32 bits
         optim = "paged_adamw_8bit",
@@ -183,7 +183,7 @@ def main():
         eval_strategy="steps",         # <-- activa evaluación periódica
         num_train_epochs=1,             # <-- opcional: usa epochs en lugar de max_steps
         #max_steps=30,
-        learning_rate=1e-4,
+        learning_rate=2e-4,
         logging_steps=1,
         optim = "paged_adamw_8bit", 
         weight_decay=0.01,
