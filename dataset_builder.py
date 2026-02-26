@@ -161,5 +161,4 @@ if __name__ == "__main__":
     print(f"Instructivo Train filas: {len(instruct_dataset['train'])}") # Ej: 7,640 documentos
     #print(instruct_dataset['train']) # Ver ejemplo de prompt
 
-
     instruct_dataset.save_to_disk(path_to_save_instruct)
