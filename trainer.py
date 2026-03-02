@@ -34,7 +34,7 @@ from trainers.nnPUTrainer import nnPUTrainer
 parser = argparse.ArgumentParser(description="Baseline Dual (Train: Intervenciones / Test: Full Text)")
 parser.add_argument("--data_path", type=str, required=True)
 parser.add_argument("--mapping_path", type=str, required=True)
-parser.add_argument("--model_name", type=str, default="jhu-clsp/mmBERT-small")
+parser.add_argument("--model_name", type=str, default="BSC-LT/MrBERT-legal")
 parser.add_argument("--mode", type=str, choices=["full", "lora", "qlora"], default="full")
 parser.add_argument("--output_dir", type=str, default="./results")
 parser.add_argument("--seed", type=int, default=SEED)
@@ -265,7 +265,8 @@ training_args = TrainingArguments(
     seed=args.seed,
     data_seed=args.seed,
     logging_steps=100,
-    report_to="none"
+    report_to="none",
+    #lr_scheduler_type="cosine"
 )
 
 early_stopping_callback = EarlyStoppingCallback(
