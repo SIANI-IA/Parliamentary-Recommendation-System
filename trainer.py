@@ -29,12 +29,13 @@ from utils import SEED
 from trainers.trainer_utils import initialize_determinism, compute_metrics, get_pos_weight_value, estimate_prior
 from trainers.WeightedTrainer import WeightedTrainer
 from trainers.nnPUTrainer import nnPUTrainer
+from trainers.GraphRegularizedTrainer import GraphRegularizedTrainer
 
 # --- 1. CONFIGURACIÓN ---
 parser = argparse.ArgumentParser(description="Baseline Dual (Train: Intervenciones / Test: Full Text)")
 parser.add_argument("--data_path", type=str, required=True)
 parser.add_argument("--mapping_path", type=str, required=True)
-parser.add_argument("--model_name", type=str, default="BSC-LT/MrBERT-legal")
+parser.add_argument("--model_name", type=str, default="jhu-clsp/mmBERT-small")
 parser.add_argument("--mode", type=str, choices=["full", "lora", "qlora"], default="full")
 parser.add_argument("--output_dir", type=str, default="./results")
 parser.add_argument("--seed", type=int, default=SEED)
@@ -44,8 +45,10 @@ parser.add_argument("--tiny", action="store_true", help="Usar un subset tiny par
 parser.add_argument("--dapt_adapter_path", type=str, default=None, help="Ruta a un adaptador LoRA entrenado en DAPT (opcional)")
 
 # type of loss
-parser.add_argument("--loss_type", type=str, choices=["bce", "nnpuloss", "starspace"], default="bce")
+parser.add_argument("--loss_type", type=str, choices=["bce", "nnpuloss", "starspace", "graph_bce"], default="bce")
 parser.add_argument("--num_negatives", type=int, default=5, help="Number of negative samples for StarSpace loss")
+parser.add_argument("--lambda_reg", type=float, default=0.1, help="Regularization strength for Graph Regularized BCE Loss")
+parser.add_argument("--graph_threshold", type=float, default=0.0, help="Filtro para ignorar co-ocurrencias débiles (0.0 a 1.0)")
 
 # general hyperparameters
 parser.add_argument("--epochs", type=int, default=3)
@@ -71,8 +74,12 @@ if args.loss_type == "bce":
     trainer_name = f"BCETrainer_{args.pos_weight_type}"
 elif args.loss_type == "starspace":
     trainer_name = f"StarSpaceTrainer_k{args.num_negatives}"
+elif args.loss_type == "nnpuloss":
+    trainer_name = f"nnPUTrainer_prior{args.prior:.5f}"
+elif args.loss_type == "graph_bce":
+    trainer_name = f"GraphRegTrainer_lambda{args.lambda_reg}_th{args.graph_threshold}"
 else:
-    trainer_name = f"nnPUTrainer"
+    raise ValueError(f"Tipo de loss desconocido: {args.loss_type}")
 
 full_experiment_name = (
     f"{model_name_base}_{args.mode}_"
@@ -201,6 +208,44 @@ print(f"    Train size: {len(train_dataset)} (Intervenciones)")
 print(f"    Dev size:   {len(dev_dataset)} (Documentos)")
 print(f"    Test size:  {len(test_dataset)} (Documentos)")
 
+co_occurrence_matrix = None
+if args.loss_type == "graph_bce":
+    print("[-] Construyendo matriz de co-ocurrencia S basada en el dataset de entrenamiento...")
+    
+    # Creamos una matriz de Ground Truth por documentos (N_docs x M_diputados)
+    train_docs_speakers = raw_dataset[split_to_use]['Speakers']
+    C = np.zeros((num_labels, num_labels))
+    
+    # 1. Contamos co-ocurrencias
+    for speakers_list in train_docs_speakers:
+        valid_ids = [label2id[sp] for sp in speakers_list if sp in label2id]
+        for i in valid_ids:
+            for j in valid_ids:
+                C[i, j] += 1
+                
+    # 2. Normalizamos (Similitud del Coseno)
+    S = np.zeros((num_labels, num_labels))
+    for i in range(num_labels):
+        for j in range(num_labels):
+            if i != j and C[i, i] > 0 and C[j, j] > 0:
+                S[i, j] = C[i, j] / np.sqrt(C[i, i] * C[j, j])
+
+    non_zero_vals = S[S > 0]
+    
+    print("\n[-] Análisis de la Matriz S (Valores > 0):")
+    print(f"    Media: {np.mean(non_zero_vals):.4f}")
+    print(f"    Percentil 50 (Mediana): {np.percentile(non_zero_vals, 50):.4f}")
+    print(f"    Percentil 75: {np.percentile(non_zero_vals, 75):.4f}")
+    print(f"    Percentil 90: {np.percentile(non_zero_vals, 90):.4f}")
+    print(f"    Percentil 95: {np.percentile(non_zero_vals, 95):.4f}")
+                
+    # 3. Aplicamos el umbral (opcional, para borrar ruido de diputados que apenas coinciden)
+    if args.graph_threshold > 0.0:
+        S[S < args.graph_threshold] = 0.0
+        
+    co_occurrence_matrix = torch.tensor(S, dtype=torch.float32)
+    print(f"    Matriz S calculada (Densidad: {(S > 0).mean() * 100:.2f}%)")
+
 # --- 4. MODELO ---
 print(f"[-] Inicializando modelo ({args.mode})...")
 model_config = {
@@ -302,6 +347,24 @@ elif args.loss_type == "nnpuloss":
         gamma=1.0,          # Penalización estándar
         beta=0.0            # Umbral estándar
     )
+
+elif args.loss_type == "graph_bce":
+    pos_weight_value = get_pos_weight_value(args.pos_weight_type, num_labels)
+    print(f"    Usando Graph Regularized Trainer con pos_weight = {pos_weight_value} y lambda_reg = {args.lambda_reg}")
+    trainer = GraphRegularizedTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        processing_class=tokenizer,
+        eval_dataset=dev_dataset,
+        data_collator=DataCollatorWithPadding(tokenizer=tokenizer),
+        compute_metrics=compute_metrics,
+        pos_weight_value=pos_weight_value,
+        co_occurrence_matrix=co_occurrence_matrix,
+        lambda_reg=args.lambda_reg,
+        #callbacks=[early_stopping_callback]
+    )
+
 elif args.loss_type == "starspace":
     def compute_metrics_scaled(p):
         predictions, labels = p
