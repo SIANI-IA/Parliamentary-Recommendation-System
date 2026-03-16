@@ -14,8 +14,8 @@ random.seed(SEED)
 np.random.seed(SEED)
 
 # --- CONFIGURACIÓN ---
-INPUT_DIR = "dataset/parcanDeb-rec"
-OUTPUT_DIR = "dataset/parcanDeb-rec-split"
+INPUT_DIR = "dataset/canada-rec"
+OUTPUT_DIR = "dataset/canada-rec-split"
 TINY_SIZE = 50
 
 def main():
@@ -159,6 +159,9 @@ def main():
         json.dump(mapping_data, f, indent=4, ensure_ascii=False)
 
     print(f"\n[OK] Guardado en {OUTPUT_DIR}")
+
+    print(f"MPs eliminados: {num_classes - len(train_speakers_set)}")
+    print(f"Documentos descartados en test: {len(df_test) - len(test_ds)}")
 
 if __name__ == "__main__":
     main()
