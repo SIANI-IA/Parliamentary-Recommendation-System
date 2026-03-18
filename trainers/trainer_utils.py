@@ -47,11 +47,13 @@ def estimate_prior(dataset):
 
 def get_pos_weight_value(type: str, num_labels: int) -> float:
     if type == 'linear':
-        pos_weight_value = 10
+        pos_weight_value = num_labels / 10
     elif type == 'sqrt':
         pos_weight_value = np.sqrt(num_labels)
     elif type == 'log':
         pos_weight_value = np.log(num_labels)
+    elif type == 'unweighted':
+        pos_weight_value = 1.0
     else:
         raise ValueError(f"Tipo de pos_weight desconocido: {type}")
     return pos_weight_value
