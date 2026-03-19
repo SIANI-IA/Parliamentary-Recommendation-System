@@ -151,13 +151,16 @@ class DenseEmbeddingRecommender(Recommender):
         # profiles_matrix puede ser (N_MPs, Dim) o (Total_Intervenciones, Dim)
         # scores_raw será (N_Queries, N_Rows_in_Profile)
         # Convertimos profiles_matrix a Tensor para usar util.cos_sim (optimizado en GPU)
-        profiles_tensor = torch.tensor(self.profiles_matrix, device=self.device)
-        if self.use_half_precision and self.device == 'cuda':
-            query_embeddings = query_embeddings.astype(np.float16)
-        queries_tensor = torch.tensor(query_embeddings, device=self.device) # Asegurar que es tensor
-        
-        if self.use_half_precision and self.device == 'cuda':
-            profiles_tensor = profiles_tensor.half() # Convertir a half precision si es necesario
+        target_dtype = torch.float16 if (self.use_half_precision and self.device == 'cuda') else torch.float32
+
+        # Convert numpy arrays to the target dtype before building tensors
+        if isinstance(query_embeddings, np.ndarray):
+            query_embeddings = query_embeddings.astype(np.float32 if target_dtype == torch.float32 else np.float16)
+        profiles_np = self.profiles_matrix.astype(np.float32 if target_dtype == torch.float32 else np.float16)
+
+        queries_tensor = torch.tensor(query_embeddings, device=self.device, dtype=target_dtype)
+        profiles_tensor = torch.tensor(profiles_np, device=self.device, dtype=target_dtype)
+
         raw_scores = util.cos_sim(queries_tensor, profiles_tensor)
         
         if not self.use_intervention_level:
